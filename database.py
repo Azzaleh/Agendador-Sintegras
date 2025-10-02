@@ -1,7 +1,7 @@
 # database.py
 import sqlite3
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 def conectar():
     """Conecta ao banco de dados e habilita o acesso por nome de coluna."""
@@ -65,12 +65,33 @@ def verificar_usuario(username, password):
     if usuario:
         return dict(usuario)
     return None
-    
-def listar_usuarios(): # Função auxiliar para o novo relatório de logs
+
+def listar_usuarios():
     conn = conectar()
     usuarios = conn.execute("SELECT username FROM usuarios ORDER BY username").fetchall()
     conn.close()
     return [row['username'] for row in usuarios]
+
+def deletar_usuario(id, usuario_logado):
+    """ Deleta um usuário do sistema, com proteção para o ID 1. """
+    # --- NOVA CAMADA DE SEGURANÇA ---
+    # Impede que o usuário com ID 1 (admin principal) seja deletado.
+    if id == 1:
+        registrar_log(usuario_logado, 'EXCLUSAO_NEGADA', f'Tentativa de excluir usuário admin principal (ID: {id})')
+        return False # Retorna False para indicar que a operação falhou
+
+    conn = conectar()
+    # Pega o nome para o log antes de deletar
+    cursor = conn.execute("SELECT username FROM usuarios WHERE id = ?", (id,))
+    usuario = cursor.fetchone()
+    nome_usuario = usuario['username'] if usuario else f"ID {id}"
+    
+    conn.execute("DELETE FROM usuarios WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    
+    registrar_log(usuario_logado, 'USUARIO_DELETADO', f'Usuário: {nome_usuario}')
+    return True # Retorna True para indicar sucesso
 
 def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, usuario_logado):
     conn = conectar()
@@ -139,12 +160,76 @@ def adicionar_entrega(data_vencimento, horario, status_id, cliente_id, responsav
     conn.close()
     registrar_log(usuario_logado, "AGENDAMENTO_CRIADO", f"Data: {data_vencimento}, Hora: {horario}, Cliente ID: {cliente_id}")
 
+# database.py
+
 def atualizar_entrega(id, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
     conn = conectar()
-    conn.execute("UPDATE entregas SET horario=?, status_id=?, cliente_id=?, responsavel=?, observacoes=? WHERE id=?", (horario, status_id, cliente_id, responsavel, observacoes, id))
+    # Usaremos um cursor para poder buscar dados
+    cursor = conn.cursor()
+
+    # 1. ANTES de atualizar, buscamos os dados antigos no banco
+    #    Usamos JOINs para já pegar os nomes do cliente e do status
+    cursor.execute("""
+        SELECT e.horario, e.status_id, e.cliente_id, e.responsavel, e.observacoes,
+               c.nome as nome_cliente, s.nome as nome_status
+        FROM entregas e
+        LEFT JOIN clientes c ON e.cliente_id = c.id
+        LEFT JOIN status s ON e.status_id = s.id
+        WHERE e.id = ?
+    """, (id,))
+    dados_antigos = cursor.fetchone()
+
+    # Se por algum motivo o agendamento não for encontrado, encerramos aqui
+    if not dados_antigos:
+        conn.close()
+        return
+
+    # 2. Agora, realizamos o UPDATE no banco de dados com os novos dados
+    cursor.execute("UPDATE entregas SET horario=?, status_id=?, cliente_id=?, responsavel=?, observacoes=? WHERE id=?",
+                   (horario, status_id, cliente_id, responsavel, observacoes, id))
+
+    # 3. Comparamos os dados antigos com os novos para montar os detalhes do log
+    detalhes_log = []
+
+    # Compara o Status (a sua solicitação principal)
+    if dados_antigos['status_id'] != status_id:
+        nome_status_antigo = dados_antigos['nome_status'] if dados_antigos['nome_status'] else "Nenhum"
+        # Busca o nome do novo status
+        cursor.execute("SELECT nome FROM status WHERE id = ?", (status_id,))
+        res_status = cursor.fetchone()
+        nome_status_novo = res_status['nome'] if res_status else "Nenhum"
+        detalhes_log.append(f"Status: de '{nome_status_antigo}' para '{nome_status_novo}'")
+
+    # BÔNUS: Vamos fazer o mesmo para outros campos importantes
+    if dados_antigos['cliente_id'] != cliente_id:
+        nome_cliente_antigo = dados_antigos['nome_cliente']
+        cursor.execute("SELECT nome FROM clientes WHERE id = ?", (cliente_id,))
+        res_cliente = cursor.fetchone()
+        nome_cliente_novo = res_cliente['nome'] if res_cliente else "N/A"
+        detalhes_log.append(f"Cliente: de '{nome_cliente_antigo}' para '{nome_cliente_novo}'")
+
+    if dados_antigos['horario'] != horario:
+        detalhes_log.append(f"Horário: de '{dados_antigos['horario']}' para '{horario}'")
+
+    if dados_antigos['responsavel'] != responsavel:
+        detalhes_log.append(f"Responsável: de '{dados_antigos['responsavel']}' para '{responsavel}'")
+
+    if dados_antigos['observacoes'] != observacoes:
+        detalhes_log.append("Observações foram alteradas.")
+
+    # 4. Monta a string final para o log
+    if not detalhes_log:
+        detalhes_finais = f"Agendamento ID {id} salvo sem alterações."
+    else:
+        # Junta todas as alterações encontradas, separadas por "; "
+        detalhes_finais = f"Agendamento ID {id}: " + "; ".join(detalhes_log)
+
+    # 5. Salva as alterações no banco e fecha a conexão
     conn.commit()
     conn.close()
-    registrar_log(usuario_logado, "AGENDAMENTO_ATUALIZADO", f"Agendamento ID: {id}")
+    
+    # 6. Registra o log com a nossa nova mensagem detalhada
+    registrar_log(usuario_logado, "AGENDAMENTO_ATUALIZADO", detalhes_finais)
 
 def deletar_entrega(id, usuario_logado):
     conn = conectar()
@@ -182,12 +267,6 @@ def get_status_dias_para_mes(ano, mes):
                 if entrega['nome_status'] == status_final: cor_final = entrega['cor_hex']; break
         resultado_final[dia] = {'cor': cor_final, 'contagem': len(status_lista)}
     return resultado_final
-
-def get_entregas_para_relatorio(ano, mes):
-    data_inicio = f"{ano}-{mes:02d}-01"; data_fim = f"{ano}-{mes:02d}-31"; conn = conectar()
-    query = "SELECT e.data_vencimento, e.horario, e.responsavel, e.observacoes, c.nome as nome_cliente, c.tipo_envio, c.contato, s.nome as nome_status FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento BETWEEN ? AND ? ORDER BY e.data_vencimento, e.horario"
-    entregas = conn.execute(query, (data_inicio, data_fim)).fetchall(); conn.close()
-    return [dict(row) for row in entregas]
 
 def get_entregas_no_intervalo(data, hora_inicio, hora_fim):
     conn = conectar(); query = "SELECT e.id, e.horario, c.nome as nome_cliente, s.nome as nome_status FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento = ? AND e.horario BETWEEN ? AND ?"
@@ -246,6 +325,56 @@ def get_logs_filtrados(data_inicio, data_fim, usuario_nome=None):
         
     query += " ORDER BY timestamp DESC"
     
-    logs = conn.execute(query, params).fetchall()
+    logs_raw = conn.execute(query, params).fetchall()
     conn.close()
-    return [dict(row) for row in logs]
+    
+    # --- NOVA LÓGICA DE CONVERSÃO DE FUSO HORÁRIO ---
+    logs_convertidos = []
+    fuso_local = timezone(timedelta(hours=-3)) # Define o fuso como UTC-3 (Horário de Brasília)
+
+    for log in logs_raw:
+        log_dict = dict(log)
+        
+        # 1. Converte a string de data/hora do banco para um objeto datetime
+        timestamp_utc_str = log_dict['timestamp']
+        # O SQLite pode ter formatos diferentes, então tentamos os mais comuns
+        try:
+            timestamp_utc = datetime.strptime(timestamp_utc_str, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            # Tenta com milissegundos, caso o formato do banco inclua
+            timestamp_utc = datetime.strptime(timestamp_utc_str, '%Y-%m-%d %H:%M:%S.%f')
+
+        # 2. Informa ao Python que este objeto está em UTC
+        timestamp_utc = timestamp_utc.replace(tzinfo=timezone.utc)
+        
+        # 3. Converte o objeto para o nosso fuso horário local
+        timestamp_local = timestamp_utc.astimezone(fuso_local)
+        
+        # 4. Formata de volta para uma string legível e atualiza o dicionário
+        log_dict['timestamp'] = timestamp_local.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logs_convertidos.append(log_dict)
+        
+    return logs_convertidos
+
+def atualizar_usuario(id, username, password, usuario_logado):
+    conn = conectar()
+    senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    conn.execute("UPDATE usuarios SET username=?, password_hash=? WHERE id=?", (username, senha_hash, id))
+    conn.commit()
+    conn.close()
+    registrar_log(usuario_logado, "USUARIO_ATUALIZADO", f"Usuário ID: {id}, Nome: {username}")
+
+def verificar_senha_usuario_atual(username, password):
+    """Verifica se a senha fornecida corresponde à do usuário informado."""
+    conn = conectar()
+    senha_hash_fornecida = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    
+    cursor = conn.execute("SELECT password_hash FROM usuarios WHERE username = ?", (username,))
+    resultado = cursor.fetchone()
+    conn.close()
+    
+    if resultado:
+        senha_hash_salva = resultado['password_hash']
+        return senha_hash_fornecida == senha_hash_salva
+    return False

@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QPushButton, QLabel, QDialog, QLineEdit, QComboBox, QMessageBox, 
                              QFileDialog, QFormLayout, QCheckBox, QTextEdit, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
-                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox)
+                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
 from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings
 
@@ -232,7 +232,6 @@ class JanelaClientes(QDialog):
         cliente_data = self.tabela_clientes.item(linha_selecionada, 0).data(Qt.UserRole)
         reply = QMessageBox.question(self, "Confirmar Exclusão", f"Tem certeza que deseja excluir o cliente '{cliente_data['nome']}'?\nTODAS as entregas associadas a ele também serão excluídas.", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes: database.deletar_cliente(cliente_data['id'], self.usuario_logado['username']); self.carregar_clientes()
-
 class FormularioStatusDialog(QDialog):
     def __init__(self, status=None, parent=None):
         super().__init__(parent); self.status = status; self.setWindowTitle("Novo Status" if not status else "Editar Status"); layout = QFormLayout(self); self.nome_edit = QLineEdit(); self.cor_btn = QPushButton("Escolher Cor"); self.cor_label = QLabel(); self.cor_label.setFixedSize(20, 20); cor_layout = QHBoxLayout(); cor_layout.addWidget(self.cor_btn); cor_layout.addWidget(self.cor_label); layout.addRow("Nome:", self.nome_edit); layout.addRow("Cor:", cor_layout)
@@ -266,42 +265,139 @@ class StatusDialog(QDialog):
         if linha < 0: return;
         status_data = self.tabela_status.item(linha, 0).data(Qt.UserRole); reply = QMessageBox.question(self, "Confirmar Exclusão", f"Tem certeza que deseja excluir o status '{status_data['nome']}'?\nOs agendamentos que usam este status ficarão sem categoria.", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes: database.deletar_status(status_data['id'], self.usuario_logado['username']); self.carregar_status(); self.parent().populate_calendar()
+# main.py
 
 class EntregaDialog(QDialog):
-    def __init__(self, entrega_data=None, parent=None):
-        super().__init__(parent); self.entrega_data = entrega_data; self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega"); layout = QFormLayout(self); self.cliente_combo = QComboBox(); self.status_combo = QComboBox(); self.responsavel_edit = QLineEdit(); self.observacoes_edit = QTextEdit(); self.carregar_combos(); layout.addRow("Cliente:", self.cliente_combo); layout.addRow("Status:", self.status_combo); layout.addRow("Responsável:", self.responsavel_edit); layout.addRow("Observações:", self.observacoes_edit)
-        if entrega_data:
-            index_cliente = self.cliente_combo.findData(entrega_data['cliente_id']);
-            if index_cliente > -1: self.cliente_combo.setCurrentIndex(index_cliente)
-            index_status = self.status_combo.findData(entrega_data['status_id']);
-            if index_status > -1: self.status_combo.setCurrentIndex(index_status)
-            self.responsavel_edit.setText(entrega_data['responsavel']); self.observacoes_edit.setText(entrega_data['observacoes'])
-        else:
-            index_pendente = self.status_combo.findText("PENDENTE");
-            if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
-        botoes_layout = QHBoxLayout(); self.salvar_btn = QPushButton("Salvar"); self.cancelar_btn = QPushButton("Cancelar"); botoes_layout.addStretch(); botoes_layout.addWidget(self.salvar_btn); botoes_layout.addWidget(self.cancelar_btn); layout.addRow(botoes_layout); self.salvar_btn.clicked.connect(self.accept); self.cancelar_btn.clicked.connect(self.reject)
-    def carregar_combos(self):
-        self.cliente_combo.clear(); self.status_combo.clear()
-        for cliente in database.listar_clientes(): self.cliente_combo.addItem(cliente['nome'], cliente['id'])
-        for status in database.listar_status(): self.status_combo.addItem(status['nome'], status['id'])
-    def get_data(self): return { "cliente_id": self.cliente_combo.currentData(), "status_id": self.status_combo.currentData(), "responsavel": self.responsavel_edit.text().strip(), "observacoes": self.observacoes_edit.toPlainText().strip() }
+    # SUBSTITUA TODA A SUA CLASSE POR ESTA VERSÃO ATUALIZADA
+    def __init__(self, usuario_logado, date, entrega_data=None, parent=None):
+        super().__init__(parent)
+        self.entrega_data = entrega_data
+        self.usuario_logado = usuario_logado
+        self.date = date  # Armazena a data para usar no rascunho
 
+        self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
+        layout = QFormLayout(self)
+
+        # --- Definição dos Componentes ---
+        self.cliente_combo = QComboBox()
+        self.status_combo = QComboBox()
+        self.responsavel_edit = QLineEdit()
+        self.observacoes_edit = QTextEdit()
+        self.rascunho_edit = QLineEdit()
+        self.rascunho_edit.setReadOnly(True)
+        self.rascunho_edit.setPlaceholderText("Selecione um cliente e status...")
+        
+        copiar_btn = QPushButton("Copiar")
+        rascunho_layout = QHBoxLayout()
+        rascunho_layout.addWidget(self.rascunho_edit)
+        rascunho_layout.addWidget(copiar_btn)
+
+        self.salvar_btn = QPushButton("Salvar")
+        self.cancelar_btn = QPushButton("Cancelar")
+
+        # --- Lógica de Preenchimento e Configuração ---
+        self.responsavel_edit.setText(self.usuario_logado['username'])
+        self.carregar_combos() # Carrega os dados e verifica se há clientes
+
+        # --- Adiciona os componentes ao layout da janela ---
+        layout.addRow("Cliente:", self.cliente_combo)
+        layout.addRow("Status:", self.status_combo)
+        layout.addRow("Responsável:", self.responsavel_edit)
+        layout.addRow("Rascunho:", rascunho_layout)
+        layout.addRow("Observações:", self.observacoes_edit)
+
+        if entrega_data:
+            # Carrega dados existentes se estiver no modo de edição
+            index_cliente = self.cliente_combo.findData(entrega_data['cliente_id'])
+            if index_cliente > -1: self.cliente_combo.setCurrentIndex(index_cliente)
+            
+            index_status = self.status_combo.findData(entrega_data['status_id'])
+            if index_status > -1: self.status_combo.setCurrentIndex(index_status)
+            
+            if entrega_data.get('responsavel'):
+                 self.responsavel_edit.setText(entrega_data['responsavel'])
+            self.observacoes_edit.setText(entrega_data['observacoes'])
+        else:
+            # Define o status "PENDENTE" como padrão para novos agendamentos
+            index_pendente = self.status_combo.findText("PENDENTE")
+            if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
+            
+        botoes_layout = QHBoxLayout()
+        botoes_layout.addStretch()
+        botoes_layout.addWidget(self.salvar_btn)
+        botoes_layout.addWidget(self.cancelar_btn)
+        layout.addRow(botoes_layout)
+        
+        # --- Conexão dos Sinais (Eventos) ---
+        self.salvar_btn.clicked.connect(self.accept)
+        self.cancelar_btn.clicked.connect(self.reject)
+        copiar_btn.clicked.connect(self.copiar_rascunho)
+        self.cliente_combo.currentIndexChanged.connect(self.atualizar_rascunho)
+        self.status_combo.currentIndexChanged.connect(self.atualizar_rascunho)
+
+        self.atualizar_rascunho() # Gera o texto do rascunho ao iniciar
+
+    def carregar_combos(self):
+        # Refatorado para legibilidade e robustez
+        self.cliente_combo.clear()
+        self.status_combo.clear()
+
+        clientes = database.listar_clientes()
+        status_list = database.listar_status()
+
+        if not clientes:
+            self.cliente_combo.addItem("Nenhum cliente cadastrado")
+            self.cliente_combo.setEnabled(False)
+            self.salvar_btn.setEnabled(False)
+            self.rascunho_edit.setEnabled(False)
+            self.observacoes_edit.setPlaceholderText("É necessário cadastrar um cliente antes de criar um agendamento.")
+        else:
+            for cliente in clientes:
+                self.cliente_combo.addItem(cliente['nome'], cliente['id'])
+
+        for status in status_list:
+            self.status_combo.addItem(status['nome'], status['id'])
+
+    def get_data(self):
+        # Refatorado para melhor legibilidade
+        return {
+            "cliente_id": self.cliente_combo.currentData(),
+            "status_id": self.status_combo.currentData(),
+            "responsavel": self.responsavel_edit.text().strip(),
+            "observacoes": self.observacoes_edit.toPlainText().strip()
+        }
+    
+    def atualizar_rascunho(self):
+        """Gera a string do rascunho com base nos campos atuais."""
+        if not self.cliente_combo.isEnabled():
+            return
+
+        nome_cliente = self.cliente_combo.currentText()
+        nome_status = self.status_combo.currentText()
+        data_str = self.date.toString("MM/yyyy")
+        
+        if nome_status.lower() == 'retificado':
+            texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
+        else:
+            texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
+            
+        self.rascunho_edit.setText(texto_rascunho)
+
+    def copiar_rascunho(self):
+        """Copia o texto do rascunho para a área de transferência."""
+        texto_para_copiar = self.rascunho_edit.text()
+        if texto_para_copiar:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(texto_para_copiar)
+            
+            botao = self.sender()
+            botao.setText("Copiado!")
+            QTimer.singleShot(1500, lambda: botao.setText("Copiar"))
 class DayViewDialog(QDialog):
     def __init__(self, date, usuario_logado, parent=None):
         super().__init__(parent); self.date = date; self.usuario_logado = usuario_logado; self.setWindowTitle(f"Agenda para {date.toString('dd/MM/yyyy')}"); self.setMinimumSize(800, 600)
         self.horarios = self.gerar_horarios_dinamicos()
-        layout = QVBoxLayout(self); self.tabela_agenda = QTableWidget(); self.tabela_agenda.setColumnCount(5); self.tabela_agenda.setHorizontalHeaderLabels(["Horário", "Cliente", "Contato", "Tipo Envio", "Status"]); self.tabela_agenda.setEditTriggers(QTableWidget.NoEditTriggers); self.tabela_agenda.setSelectionBehavior(QTableWidget.SelectRows); self.tabela_agenda.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.tabela_agenda.setColumnWidth(0, 80); layout.addWidget(self.tabela_agenda)
-        botoes_layout = QHBoxLayout()
-        edit_btn = QPushButton("Editar Agendamento")
-        del_btn = QPushButton("Excluir Agendamento")
-        botoes_layout.addStretch()
-        botoes_layout.addWidget(edit_btn)
-        botoes_layout.addWidget(del_btn)
-        layout.addLayout(botoes_layout)
-        edit_btn.clicked.connect(self.editar_agendamento)
-        del_btn.clicked.connect(self.excluir_agendamento)
-        self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique)
-        self.carregar_agenda_dia()
+        layout = QVBoxLayout(self); self.tabela_agenda = QTableWidget(); self.tabela_agenda.setColumnCount(5); self.tabela_agenda.setHorizontalHeaderLabels(["Horário", "Cliente", "Contato", "Tipo Envio", "Status"]); self.tabela_agenda.setEditTriggers(QTableWidget.NoEditTriggers); self.tabela_agenda.setSelectionBehavior(QTableWidget.SelectRows); self.tabela_agenda.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.tabela_agenda.setColumnWidth(0, 80); layout.addWidget(self.tabela_agenda); botoes_layout = QHBoxLayout(); edit_btn = QPushButton("Editar Agendamento"); del_btn = QPushButton("Excluir Agendamento"); botoes_layout.addStretch(); botoes_layout.addWidget(edit_btn); botoes_layout.addWidget(del_btn); layout.addLayout(botoes_layout); edit_btn.clicked.connect(self.editar_agendamento); del_btn.clicked.connect(self.excluir_agendamento); self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique); self.carregar_agenda_dia()
     def gerar_horarios_dinamicos(self):
         settings = QSettings()
         modo = settings.value("horarios/modo", "automatico")
@@ -340,7 +436,7 @@ class DayViewDialog(QDialog):
             self.editar_agendamento()
         else:
             horario = item_horario.text()
-            dialog = EntregaDialog(parent=self)
+            dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
             if dialog.exec_() == QDialog.Accepted:
                 data = dialog.get_data()
                 database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['username'])
@@ -352,7 +448,7 @@ class DayViewDialog(QDialog):
         item_horario = self.tabela_agenda.item(linha_selecionada, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
         if not agendamento_existente: QMessageBox.information(self, "Aviso", "Este horário está vago. Dê um clique duplo para criar um novo agendamento."); return
-        dialog = EntregaDialog(entrega_data=agendamento_existente, parent=self)
+        dialog = EntregaDialog(self.usuario_logado, self.date, entrega_data=agendamento_existente, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             database.atualizar_entrega(agendamento_existente['id'], agendamento_existente['horario'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['username'])
@@ -368,7 +464,6 @@ class DayViewDialog(QDialog):
         if reply == QMessageBox.Yes:
             database.deletar_entrega(agendamento_existente['id'], self.usuario_logado['username'])
             self.carregar_agenda_dia(); self.parent().populate_calendar()
-
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent); self.setWindowTitle("Configurações"); self.settings = QSettings(); main_layout = QVBoxLayout(self); modo_groupbox = QGroupBox("Modo de Definição de Horários"); modo_layout = QVBoxLayout(); self.radio_auto = QRadioButton("Gerar horários automaticamente"); self.radio_manual = QRadioButton("Inserir horários manualmente"); modo_layout.addWidget(self.radio_auto); modo_layout.addWidget(self.radio_manual); modo_groupbox.setLayout(modo_layout); self.auto_groupbox = QGroupBox("Configuração Automática"); auto_layout = QFormLayout(); self.inicio_edit = QTimeEdit(); self.fim_edit = QTimeEdit(); self.intervalo_spin = QSpinBox(); self.intervalo_spin.setRange(5, 120); self.intervalo_spin.setSuffix(" minutos"); auto_layout.addRow("Hora de Início:", self.inicio_edit); auto_layout.addRow("Hora de Fim:", self.fim_edit); auto_layout.addRow("Intervalo:", self.intervalo_spin); self.auto_groupbox.setLayout(auto_layout); self.manual_groupbox = QGroupBox("Configuração Manual"); manual_layout = QFormLayout(); self.lista_manual_edit = QLineEdit(); self.lista_manual_edit.setPlaceholderText("Ex: 08:00, 09:15, 10:30, 14:00"); manual_layout.addRow("Lista de horários (separados por vírgula):", self.lista_manual_edit); self.manual_groupbox.setLayout(manual_layout); geral_groupbox = QGroupBox("Geral"); geral_layout = QFormLayout(); self.lembrete_spin = QSpinBox(); self.lembrete_spin.setRange(1, 60); self.lembrete_spin.setSuffix(" minutos"); geral_layout.addRow("Avisar com antecedência de:", self.lembrete_spin); geral_groupbox.setLayout(geral_layout); main_layout.addWidget(modo_groupbox); main_layout.addWidget(self.auto_groupbox); main_layout.addWidget(self.manual_groupbox); main_layout.addWidget(geral_groupbox); botoes = QHBoxLayout(); salvar_btn = QPushButton("Salvar"); cancelar_btn = QPushButton("Cancelar"); botoes.addStretch(); botoes.addWidget(salvar_btn); botoes.addWidget(cancelar_btn); main_layout.addLayout(botoes); salvar_btn.clicked.connect(self.salvar); cancelar_btn.clicked.connect(self.reject); self.radio_auto.toggled.connect(self.atualizar_modo_visivel); self.carregar_configs()
@@ -387,47 +482,321 @@ class ConfigDialog(QDialog):
             self.settings.setValue("horarios/modo", "manual"); self.settings.setValue("horarios/lista_manual", self.lista_manual_edit.text())
         self.settings.setValue("geral/minutos_lembrete", self.lembrete_spin.value()); QMessageBox.information(self, "Salvo", "Configurações salvas. Por favor, reinicie o programa para que todas as alterações tenham efeito."); self.accept()
 
+class RelatorioDialog(QDialog):
+    def __init__(self, usuario_logado, parent=None):
+        super().__init__(parent); self.usuario_logado = usuario_logado; self.setWindowTitle("Gerar Relatórios"); self.setMinimumWidth(400)
+        layout = QVBoxLayout(self); form_layout = QFormLayout(); self.tipo_relatorio_combo = QComboBox(); self.tipo_relatorio_combo.addItems(["Relatório de Agendamentos", "Relatório de Logs de Atividade"]); self.data_inicio_edit = QDateEdit(QDate.currentDate().addDays(-30)); self.data_inicio_edit.setCalendarPopup(True); self.data_fim_edit = QDateEdit(QDate.currentDate()); self.data_fim_edit.setCalendarPopup(True); self.filtros_agendamento_group = QGroupBox("Filtros de Agendamento"); filtros_agendamento_layout = QVBoxLayout(); self.status_list_widget = QListWidget(); self.status_list_widget.setSelectionMode(QListWidget.MultiSelection); filtros_agendamento_layout.addWidget(QLabel("Filtrar por Status (deixe sem selecionar para incluir todos):")); filtros_agendamento_layout.addWidget(self.status_list_widget); self.filtros_agendamento_group.setLayout(filtros_agendamento_layout); self.filtros_logs_group = QGroupBox("Filtros de Logs"); filtros_logs_layout = QFormLayout(); self.usuario_combo = QComboBox(); filtros_logs_layout.addRow("Filtrar por Usuário:", self.usuario_combo); self.filtros_logs_group.setLayout(filtros_logs_layout)
+        self.carregar_filtros(); form_layout.addRow("Tipo de Relatório:", self.tipo_relatorio_combo); form_layout.addRow("Data de Início:", self.data_inicio_edit); form_layout.addRow("Data de Fim:", self.data_fim_edit); layout.addLayout(form_layout); layout.addWidget(self.filtros_agendamento_group); layout.addWidget(self.filtros_logs_group); gerar_btn = QPushButton("Gerar Relatório"); layout.addWidget(gerar_btn, alignment=Qt.AlignCenter); gerar_btn.clicked.connect(self.gerar_relatorio); self.tipo_relatorio_combo.currentIndexChanged.connect(self.atualizar_filtros_visiveis); self.atualizar_filtros_visiveis()
+    def carregar_filtros(self):
+        for status in database.listar_status():
+            item = QListWidgetItem(status['nome']); item.setData(Qt.UserRole, status['id']); self.status_list_widget.addItem(item)
+        self.usuario_combo.addItem("Todos")
+        for username in database.listar_usuarios(): self.usuario_combo.addItem(username)
+    def atualizar_filtros_visiveis(self):
+        if "Agendamentos" in self.tipo_relatorio_combo.currentText():
+            self.filtros_agendamento_group.setVisible(True); self.filtros_logs_group.setVisible(False)
+        else:
+            self.filtros_agendamento_group.setVisible(False); self.filtros_logs_group.setVisible(True)
+    def gerar_relatorio(self):
+        data_inicio = self.data_inicio_edit.date().toString("yyyy-MM-dd"); data_fim = self.data_fim_edit.date().toString("yyyy-MM-dd"); tipo_relatorio = self.tipo_relatorio_combo.currentText()
+        dialog = QFileDialog(self); dialog.setAcceptMode(QFileDialog.AcceptSave); dialog.setNameFilter("Arquivos PDF (*.pdf);;Arquivos CSV (*.csv)"); dialog.setDefaultSuffix("pdf")
+        if "Agendamentos" in tipo_relatorio:
+            dialog.selectFile(f"Relatorio_Agendamentos_{data_inicio}_a_{data_fim}"); status_selecionados_ids = [item.data(Qt.UserRole) for item in self.status_list_widget.selectedItems()]; dados = database.get_entregas_filtradas(data_inicio, data_fim, status_selecionados_ids)
+            titulo = f"Relatório de Agendamentos de {self.data_inicio_edit.date().toString('dd/MM/yyyy')} a {self.data_fim_edit.date().toString('dd/MM/yyyy')}"
+            if not dados: QMessageBox.information(self, "Aviso", "Nenhum agendamento encontrado para os filtros selecionados."); return
+            if dialog.exec_():
+                nome_arquivo = dialog.selectedFiles()[0]
+                if nome_arquivo.endswith(".pdf"): export.exportar_para_pdf(dados, nome_arquivo, titulo)
+                elif nome_arquivo.endswith(".csv"): export.exportar_para_csv(dados, nome_arquivo)
+        else:
+            dialog.selectFile(f"Relatorio_Logs_{data_inicio}_a_{data_fim}"); usuario_selecionado = self.usuario_combo.currentText(); dados = database.get_logs_filtrados(data_inicio, data_fim, usuario_selecionado)
+            titulo = f"Relatório de Logs de {self.data_inicio_edit.date().toString('dd/MM/yyyy')} a {self.data_fim_edit.date().toString('dd/MM/yyyy')}"
+            if not dados: QMessageBox.information(self, "Aviso", "Nenhum log encontrado para os filtros selecionados."); return
+            if dialog.exec_():
+                nome_arquivo = dialog.selectedFiles()[0]
+                if nome_arquivo.endswith(".pdf"): export.exportar_logs_pdf(dados, nome_arquivo, titulo)
+                else: export.exportar_logs_csv(dados, nome_arquivo)
+        self.accept()
+
 # --- Janela Principal ---
+
+class DialogoUsuario(QDialog):
+    def __init__(self, parent=None, usuario=None):
+        super().__init__(parent)
+        self.setWindowTitle("Usuário")
+        self.usuario = usuario
+        layout = QFormLayout(self)
+
+        self.username_edit = QLineEdit()
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.Password)
+
+        if usuario:
+            self.username_edit.setText(usuario['username'])
+
+        layout.addRow("Usuário:", self.username_edit)
+        layout.addRow("Senha:", self.password_edit)
+
+        botoes = QHBoxLayout()
+        salvar_btn = QPushButton("Salvar")
+        salvar_btn.clicked.connect(self.accept)
+        cancelar_btn = QPushButton("Cancelar")
+        cancelar_btn.clicked.connect(self.reject)
+        botoes.addWidget(salvar_btn)
+        botoes.addWidget(cancelar_btn)
+
+        layout.addRow(botoes)
+
+    def get_dados(self):
+        return self.username_edit.text(), self.password_edit.text()
+
+class ConfirmacaoSenhaDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirmação de Administrador")
+        self.setModal(True) # Trava a janela principal enquanto esta estiver aberta
+        layout = QVBoxLayout(self)
+
+        label = QLabel("Para prosseguir, por favor, digite sua senha de administrador:")
+        self.senha_edit = QLineEdit()
+        self.senha_edit.setEchoMode(QLineEdit.Password) # Esconde a senha
+
+        layout.addWidget(label)
+        layout.addWidget(self.senha_edit)
+
+        botoes_layout = QHBoxLayout()
+        ok_btn = QPushButton("Confirmar")
+        cancelar_btn = QPushButton("Cancelar")
+
+        botoes_layout.addStretch()
+        botoes_layout.addWidget(ok_btn)
+        botoes_layout.addWidget(cancelar_btn)
+        
+        layout.addLayout(botoes_layout)
+
+        ok_btn.clicked.connect(self.accept)
+        cancelar_btn.clicked.connect(self.reject)
+
+    def get_senha(self):
+        """Retorna a senha digitada pelo usuário."""
+        return self.senha_edit.text()
+
+
+class JanelaUsuarios(QDialog):
+    def __init__(self, usuario_logado, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gerenciar Usuários")
+        self.usuario_logado = usuario_logado
+        self.resize(400, 300)
+
+        layout = QVBoxLayout(self)
+
+        self.tabela = QTableWidget()
+        self.tabela.setColumnCount(1)
+        self.tabela.setHorizontalHeaderLabels(["Usuário"])
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.tabela)
+
+        botoes = QHBoxLayout()
+        adicionar_btn = QPushButton("Adicionar")
+        editar_btn = QPushButton("Editar")
+        excluir_btn = QPushButton("Excluir")
+
+        adicionar_btn.clicked.connect(self.adicionar_usuario)
+        editar_btn.clicked.connect(self.editar_usuario)
+        excluir_btn.clicked.connect(self.excluir_usuario)
+
+        botoes.addWidget(adicionar_btn)
+        botoes.addWidget(editar_btn)
+        botoes.addWidget(excluir_btn)
+
+        layout.addLayout(botoes)
+
+        self.carregar_usuarios()
+
+    def carregar_usuarios(self):
+        usuarios = database.listar_usuarios()
+        self.tabela.setRowCount(len(usuarios))
+        for i, username in enumerate(usuarios):
+            self.tabela.setItem(i, 0, QTableWidgetItem(username))
+
+    def adicionar_usuario(self):
+        dialog = DialogoUsuario(self)
+        if dialog.exec_() == QDialog.Accepted:
+            username, password = dialog.get_dados()
+            if username and password:
+                if database.criar_usuario(username, password):
+                    QMessageBox.information(self, "Sucesso", "Usuário criado!")
+                    self.carregar_usuarios()
+                else:
+                    QMessageBox.warning(self, "Erro", "Nome de usuário já existe!")
+
+    def editar_usuario(self):
+        linha = self.tabela.currentRow()
+        if linha < 0:
+            QMessageBox.warning(self, "Ação Necessária", "Por favor, selecione um usuário para editar.")
+            return
+            
+        username_selecionado = self.tabela.item(linha, 0).text()
+
+        # --- INÍCIO DA NOVA LÓGICA DE VERIFICAÇÃO DE SENHA ---
+        
+        # 1. Pede a senha do administrador logado
+        dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
+        if dialogo_confirmacao.exec_() == QDialog.Accepted:
+            senha_digitada = dialogo_confirmacao.get_senha()
+            administrador_logado = self.usuario_logado['username']
+
+            # 2. Verifica se a senha está correta usando a função do database
+            if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
+                # 3. Se a senha estiver correta, continua com a edição
+                dialog = DialogoUsuario(self, usuario={"username": username_selecionado})
+                if dialog.exec_() == QDialog.Accepted:
+                    novo_username, nova_senha = dialog.get_dados()
+                    
+                    if not nova_senha:
+                        QMessageBox.warning(self, "Senha Obrigatória", "O campo de senha não pode estar vazio ao editar.")
+                        return
+
+                    if novo_username and nova_senha:
+                        conn = database.conectar()
+                        usuario = conn.execute("SELECT * FROM usuarios WHERE username=?", (username_selecionado,)).fetchone()
+                        conn.close()
+                        if usuario:
+                            database.atualizar_usuario(usuario["id"], novo_username, nova_senha, self.usuario_logado["username"])
+                            QMessageBox.information(self, "Sucesso", "Usuário atualizado!")
+                            self.carregar_usuarios()
+            else:
+                # Se a senha estiver incorreta, exibe um erro
+                QMessageBox.critical(self, "Falha na Autenticação", "Senha de administrador incorreta. Ação cancelada.")
+
+    def excluir_usuario(self):
+        linha = self.tabela.currentRow()
+        if linha < 0:
+            QMessageBox.warning(self, "Ação Necessária", "Por favor, selecione um usuário para excluir.")
+            return
+
+        # 1. Obter dados do usuário selecionado para pegar o ID
+        username_selecionado = self.tabela.item(linha, 0).text()
+        conn = database.conectar()
+        usuario_para_excluir = conn.execute("SELECT * FROM usuarios WHERE username=?", (username_selecionado,)).fetchone()
+        conn.close()
+
+        if not usuario_para_excluir:
+            QMessageBox.critical(self, "Erro", "Não foi possível encontrar o usuário no banco de dados.")
+            return
+
+        # 2. VERIFICAÇÃO DE SEGURANÇA: Proteger o admin principal (ID 1)
+        if usuario_para_excluir['id'] == 1:
+            QMessageBox.warning(self, "Ação Proibida", "O usuário administrador principal não pode ser excluído.")
+            return
+
+        # 3. VERIFICAÇÃO DE SEGURANÇA: Impedir autoexclusão
+        if usuario_para_excluir['id'] == self.usuario_logado['id']:
+            QMessageBox.warning(self, "Ação Proibida", "Você não pode excluir seu próprio usuário.")
+            return
+
+        # 4. Confirmação de senha do administrador logado
+        dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
+        if dialogo_confirmacao.exec_() == QDialog.Accepted:
+            senha_digitada = dialogo_confirmacao.get_senha()
+            administrador_logado = self.usuario_logado['username']
+
+            if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
+                # 5. Se tudo estiver correto, exibir confirmação final e proceder com a exclusão
+                reply = QMessageBox.question(self, "Confirmar Exclusão", 
+                                             f"Tem certeza que deseja excluir permanentemente o usuário '{username_selecionado}'?",
+                                             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                
+                if reply == QMessageBox.Yes:
+                    if database.deletar_usuario(usuario_para_excluir["id"], self.usuario_logado["username"]):
+                        QMessageBox.information(self, "Sucesso", "Usuário excluído!")
+                        self.carregar_usuarios()
+                    else:
+                        # Esta mensagem apareceria se o database.py falhasse (por ex, na trava do ID 1)
+                        QMessageBox.critical(self, "Erro", "Ocorreu um erro ao excluir o usuário.")
+            else:
+                QMessageBox.critical(self, "Falha na Autenticação", "Senha de administrador incorreta. Ação cancelada.")
+
+
 class CalendarWindow(QMainWindow):
     def __init__(self, usuario):
-        super().__init__()
-        self.usuario_atual = usuario
-        titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"
-        self.setWindowTitle(titulo)
-        self.setGeometry(100, 100, 900, 700)
-        self.current_date = datetime.now()
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QVBoxLayout(self.central_widget)
-        self.notificados_nesta_sessao = set()
-        self.setup_ui()
-        self.setup_tray_icon()
-        self.setup_timer_notificacoes()
-        self.populate_calendar()
+        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()
+    # main.py
+
     def setup_ui(self):
-        nav_layout = QHBoxLayout(); prev_btn = QPushButton("< Mês Anterior"); prev_btn.clicked.connect(self.prev_month); self.month_label = QLabel(); self.month_label.setAlignment(Qt.AlignCenter); next_btn = QPushButton("Próximo Mês >"); next_btn.clicked.connect(self.next_month); nav_layout.addWidget(prev_btn); nav_layout.addWidget(self.month_label); nav_layout.addWidget(next_btn); self.main_layout.addLayout(nav_layout)
-        self.dashboard_label = QLabel(); self.dashboard_label.setAlignment(Qt.AlignCenter); self.main_layout.addWidget(self.dashboard_label)
-        header_layout = QGridLayout(); dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-        for i, dia in enumerate(dias): header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
-        self.main_layout.addLayout(header_layout); self.calendar_grid = QGridLayout(); self.calendar_grid.setSpacing(0); self.main_layout.addLayout(self.calendar_grid)
-        action_layout = QHBoxLayout(); config_btn = QPushButton("Configurações"); config_btn.clicked.connect(self.abrir_configuracoes); clientes_btn = QPushButton("Gerenciar Clientes"); clientes_btn.clicked.connect(self.gerenciar_clientes); status_btn = QPushButton("Gerenciar Status"); status_btn.clicked.connect(self.manage_status); export_btn = QPushButton("Exportar Mês"); export_btn.clicked.connect(self.export_month)
-        action_layout.addWidget(config_btn); action_layout.addStretch(); action_layout.addWidget(clientes_btn); action_layout.addWidget(status_btn); action_layout.addWidget(export_btn); self.main_layout.addLayout(action_layout)
+        # Layout de navegação (mês anterior/próximo)
+        nav_layout = QHBoxLayout()
+        prev_btn = QPushButton("< Mês Anterior")
+        prev_btn.clicked.connect(self.prev_month)
+        self.month_label = QLabel()
+        self.month_label.setAlignment(Qt.AlignCenter)
+        next_btn = QPushButton("Próximo Mês >")
+        next_btn.clicked.connect(self.next_month)
+        nav_layout.addWidget(prev_btn)
+        nav_layout.addWidget(self.month_label)
+        nav_layout.addWidget(next_btn)
+        self.main_layout.addLayout(nav_layout)
+
+        # Label do dashboard
+        self.dashboard_label = QLabel()
+        self.dashboard_label.setAlignment(Qt.AlignCenter)
+        self.main_layout.addWidget(self.dashboard_label)
+
+        # Cabeçalho dos dias da semana
+        header_layout = QGridLayout()
+        dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+        for i, dia in enumerate(dias):
+            header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
+        self.main_layout.addLayout(header_layout)
+        
+        # Grid do calendário
+        self.calendar_grid = QGridLayout()
+        self.calendar_grid.setSpacing(0)
+        self.main_layout.addLayout(self.calendar_grid)
+
+        # --- CÓDIGO AJUSTADO ---
+        # Layout para os botões de ação na parte inferior
+        action_layout = QHBoxLayout()
+
+        # Criação de todos os botões de ação
+        config_btn = QPushButton("Configurações")
+        config_btn.clicked.connect(self.abrir_configuracoes)
+        
+        clientes_btn = QPushButton("Gerenciar Clientes")
+        clientes_btn.clicked.connect(self.gerenciar_clientes)
+        
+        status_btn = QPushButton("Gerenciar Status")
+        status_btn.clicked.connect(self.manage_status)
+        
+        usuarios_btn = QPushButton("Gerenciar Usuários")
+        usuarios_btn.clicked.connect(self.gerenciar_usuarios)
+        
+        relatorio_btn = QPushButton("Gerar Relatório")
+        relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
+
+        # Adicionando os botões ao layout na ordem desejada
+        action_layout.addWidget(config_btn)
+        action_layout.addStretch() # Adiciona um espaço flexível no meio
+        action_layout.addWidget(clientes_btn)
+        action_layout.addWidget(status_btn)
+        action_layout.addWidget(usuarios_btn) # Botão agora é adicionado aqui
+        action_layout.addWidget(relatorio_btn)
+        
+        # Adiciona o layout dos botões ao layout principal da janela
+        self.main_layout.addLayout(action_layout)
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
         caminho_icone = os.path.join('imagens', 'icon.png')
         icon = QIcon(caminho_icone)
-        if icon.isNull():
-            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        else:
-            self.tray_icon.setIcon(icon)
+        if icon.isNull(): self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        else: self.tray_icon.setIcon(icon)
         self.tray_icon.setToolTip("Agendador de Entregas"); self.tray_icon.show()
     def setup_timer_notificacoes(self):
-        settings = QSettings()
-        minutos_lembrete = settings.value("geral/minutos_lembrete", 15, type=int)
+        settings = QSettings(); minutos_lembrete = settings.value("geral/minutos_lembrete", 15, type=int)
         self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.verificar_agendamentos_proximos(minutos_lembrete)); self.timer.start(60000)
     def verificar_agendamentos_proximos(self, minutos_antecedencia):
-        agora = datetime.now(); limite = agora + timedelta(minutes=minutos_antecedencia)
-        data_hoje = agora.strftime("%Y-%m-%d"); hora_inicio = agora.strftime("%H:%M"); hora_fim = limite.strftime("%H:%M")
+        agora = datetime.now(); limite = agora + timedelta(minutes=minutos_antecedencia); data_hoje = agora.strftime("%Y-%m-%d"); hora_inicio = agora.strftime("%H:%M"); hora_fim = limite.strftime("%H:%M")
         agendamentos = database.get_entregas_no_intervalo(data_hoje, hora_inicio, hora_fim)
         for ag in agendamentos:
             if ag['id'] not in self.notificados_nesta_sessao:
@@ -438,13 +807,11 @@ class CalendarWindow(QMainWindow):
         for i in reversed(range(self.calendar_grid.count())): self.calendar_grid.itemAt(i).widget().setParent(None)
         year = self.current_date.year; month = self.current_date.month
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
-        
         stats = database.get_estatisticas_mensais(year, month)
         texto_dashboard = (f"Concluídos no Mês: <b style='color:green;'>{stats['concluidos']}</b>"
                            f"&nbsp;&nbsp;|&nbsp;&nbsp;"
                            f"Retificados no Mês: <b style='color:#17a2b8;'>{stats['retificados']}</b>")
         self.dashboard_label.setText(texto_dashboard)
-
         status_dias = database.get_status_dias_para_mes(year, month); month_calendar = calendar.monthcalendar(year, month)
         for week_num, week in enumerate(month_calendar):
             for day_num, day in enumerate(week):
@@ -457,29 +824,21 @@ class CalendarWindow(QMainWindow):
     def gerenciar_clientes(self): dialog = JanelaClientes(self.usuario_atual, self); dialog.exec_()
     def manage_status(self): dialog = StatusDialog(self.usuario_atual, self); dialog.exec_()
     def abrir_configuracoes(self):
-        dialog = ConfigDialog(self)
+        dialog = ConfigDialog(self); dialog.exec_()
+    def abrir_dialogo_relatorio(self):
+        dialog = RelatorioDialog(self.usuario_atual, self)
         dialog.exec_()
-    def export_month(self):
-        year = self.current_date.year; month = self.current_date.month; entregas = database.get_entregas_para_relatorio(year, month)
-        if not entregas: QMessageBox.information(self, "Exportar Mês", "Não há agendamentos neste mês para exportar."); return
-        dialog = QFileDialog(self); dialog.setAcceptMode(QFileDialog.AcceptSave); dialog.setNameFilter("Arquivos PDF (*.pdf);;Arquivos CSV (*.csv)"); dialog.setDefaultSuffix("pdf"); nome_sugerido = f"Relatorio_Agendamentos_{year}-{month:02d}"; dialog.selectFile(nome_sugerido)
-        if dialog.exec_():
-            nome_arquivo = dialog.selectedFiles()[0]; titulo = f"Relatório de Agendamentos - {self.current_date.strftime('%B de %Y')}"
-            if nome_arquivo.endswith(".pdf"): export.exportar_para_pdf(entregas, nome_arquivo, titulo)
-            elif nome_arquivo.endswith(".csv"): export.exportar_para_csv(entregas, nome_arquivo)
+    def gerenciar_usuarios(self):
+        dialog = JanelaUsuarios(self.usuario_atual, self)
+        dialog.exec_()
 
 if __name__ == '__main__':
-    QApplication.setOrganizationName("SuaOrganizacao")
-    QApplication.setApplicationName("Agendador")
-    database.iniciar_db()
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
-    
+    QApplication.setOrganizationName("SuaOrganizacao"); QApplication.setApplicationName("Agendador"); database.iniciar_db()
+    app = QApplication(sys.argv); app.setQuitOnLastWindowClosed(False)
     login = LoginDialog()
     if login.exec_() == QDialog.Accepted:
         usuario_logado = login.usuario_logado
-        window = CalendarWindow(usuario_logado)
-        window.show()
+        window = CalendarWindow(usuario_logado); window.show()
         sys.exit(app.exec_())
     else:
         sys.exit(0)
