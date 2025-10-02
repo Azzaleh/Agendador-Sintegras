@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QPushButton, QLabel, QDialog, QLineEdit, QComboBox, QMessageBox, 
                              QFileDialog, QFormLayout, QCheckBox, QTextEdit, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
-                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem)
+                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem,QMenu)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
 from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings
 
@@ -53,33 +53,82 @@ class LoginDialog(QDialog):
 
 class DayCellWidget(QWidget):
     clicked = pyqtSignal(QDate)
-    def __init__(self, date, dia_info, parent=None):
+
+    def __init__(self, date, dia_info, day_of_week, parent=None):
         super().__init__(parent)
         self.date = date
         self.dia_info = dia_info if dia_info else {'cor': '#ffffff', 'contagem': 0}
+        self.day_of_week = day_of_week
+        self.calendar_window = parent
         self.setMinimumSize(100, 80)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        cor_hex = self.dia_info['cor']
-        cor_fundo = QColor(cor_hex) if self.dia_info['contagem'] > 0 else QColor("#ffffff")
-        if self.date.month() != datetime.now().month:
+
+        contagem = self.dia_info['contagem']
+        is_weekend = self.day_of_week in [5, 6]
+
+        # ---- Verifica se é feriado ----
+        feriados = self.calendar_window.feriados
+        feriado_tipo = feriados.get(self.date)
+
+        if feriado_tipo == "nacional":
+            cor_fundo = QColor("#d8bfd8")  # Roxo pastel
+        elif feriado_tipo == "municipal":
+            cor_fundo = QColor("#e6e6fa")  # Lilás pastel
+        elif contagem > 0:
+            cor_fundo = QColor(self.dia_info['cor'])
+        elif is_weekend:
+            cor_fundo = QColor("#ffe1c3")
+        else:
+            cor_fundo = QColor("#b9fa9f")
+
+        if self.date.month() != self.calendar_window.current_date.month:
             cor_fundo = QColor("#f0f0f0")
+
         painter.setBrush(cor_fundo)
+
         if self.date == QDate.currentDate():
             painter.setPen(QColor("#007bff"))
         else:
             painter.setPen(cor_fundo.darker(110))
+
         painter.drawRect(self.rect())
+
         painter.setPen(Qt.black if cor_fundo.lightness() > 127 else Qt.white)
         painter.setFont(QFont('Arial', 10, QFont.Bold))
         painter.drawText(5, 20, str(self.date.day()))
-        contagem = self.dia_info['contagem']
+
         if contagem > 0:
             painter.setFont(QFont('Arial', 8))
             painter.drawText(5, self.height() - 5, f"{contagem} agend.")
+
     def mousePressEvent(self, event):
-        self.clicked.emit(self.date)
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.date)
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+
+        marcar_nacional = menu.addAction("Marcar como Feriado Nacional")
+        marcar_municipal = menu.addAction("Marcar como Feriado Municipal")
+        desmarcar = menu.addAction("Desmarcar Feriado")
+
+        action = menu.exec_(event.globalPos())
+
+        if action == marcar_nacional:
+            self.calendar_window.feriados[self.date] = "nacional"
+        elif action == marcar_municipal:
+            self.calendar_window.feriados[self.date] = "municipal"
+        elif action == desmarcar:
+            if self.date in self.calendar_window.feriados:
+                del self.calendar_window.feriados[self.date]
+
+        # Redesenhar o calendário
+        self.calendar_window.populate_calendar()
+
+
 
 class DialogoCliente(QDialog):
     def __init__(self, usuario_logado, cliente_id=None, parent=None):
@@ -721,9 +770,8 @@ class JanelaUsuarios(QDialog):
 
 class CalendarWindow(QMainWindow):
     def __init__(self, usuario):
-        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()
+        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.feriados = {}; self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()
     # main.py
-
     def setup_ui(self):
         # Layout de navegação (mês anterior/próximo)
         nav_layout = QHBoxLayout()
@@ -816,11 +864,16 @@ class CalendarWindow(QMainWindow):
         for week_num, week in enumerate(month_calendar):
             for day_num, day in enumerate(week):
                 if day != 0:
-                    date = QDate(year, month, day); info_do_dia = status_dias.get(day); cell = DayCellWidget(date, info_do_dia, self)
+                    date = QDate(year, month, day); info_do_dia = status_dias.get(day); cell = DayCellWidget(date, info_do_dia, day_num, self)
                     cell.clicked.connect(self.open_day_view); self.calendar_grid.addWidget(cell, week_num, day_num)
     def prev_month(self): self.current_date -= timedelta(days=self.current_date.day + 1); self.populate_calendar()
     def next_month(self): _, days_in_month = calendar.monthrange(self.current_date.year, self.current_date.month); self.current_date += timedelta(days=days_in_month - self.current_date.day + 1); self.populate_calendar()
-    def open_day_view(self, date): dialog = DayViewDialog(date, self.usuario_atual, self); dialog.exec_()
+    def open_day_view(self, date):
+        if self.feriados.get(date) == "nacional":
+            QMessageBox.warning(self, "Feriado Nacional", "Não é permitido agendar em um feriado nacional.")
+            return
+        dialog = DayViewDialog(date, self.usuario_atual, self)
+        dialog.exec_()
     def gerenciar_clientes(self): dialog = JanelaClientes(self.usuario_atual, self); dialog.exec_()
     def manage_status(self): dialog = StatusDialog(self.usuario_atual, self); dialog.exec_()
     def abrir_configuracoes(self):
