@@ -65,6 +65,12 @@ def verificar_usuario(username, password):
     if usuario:
         return dict(usuario)
     return None
+    
+def listar_usuarios(): # Função auxiliar para o novo relatório de logs
+    conn = conectar()
+    usuarios = conn.execute("SELECT username FROM usuarios ORDER BY username").fetchall()
+    conn.close()
+    return [row['username'] for row in usuarios]
 
 def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, usuario_logado):
     conn = conectar()
@@ -189,14 +195,57 @@ def get_entregas_no_intervalo(data, hora_inicio, hora_fim):
     return [dict(row) for row in entregas]
 
 def get_estatisticas_mensais(ano, mes):
-    """ Calcula as estatísticas de status para um determinado mês. """
-    like_pattern = f"{ano}-{mes:02d}-%"
-    conn = conectar()
+    like_pattern = f"{ano}-{mes:02d}-%"; conn = conectar()
     query_concluidos = "SELECT COUNT(e.id) as contagem FROM entregas e JOIN status s ON e.status_id = s.id WHERE e.data_vencimento LIKE ? AND (s.nome = 'Feito' OR s.nome = 'Feito e enviado')"
-    cursor_concluidos = conn.execute(query_concluidos, (like_pattern,))
-    contagem_concluidos = cursor_concluidos.fetchone()['contagem']
+    cursor_concluidos = conn.execute(query_concluidos, (like_pattern,)); contagem_concluidos = cursor_concluidos.fetchone()['contagem']
     query_retificados = "SELECT COUNT(e.id) as contagem FROM entregas e JOIN status s ON e.status_id = s.id WHERE e.data_vencimento LIKE ? AND s.nome = 'Retificado'"
-    cursor_retificados = conn.execute(query_retificados, (like_pattern,))
-    contagem_retificados = cursor_retificados.fetchone()['contagem']
+    cursor_retificados = conn.execute(query_retificados, (like_pattern,)); contagem_retificados = cursor_retificados.fetchone()['contagem']
+    conn.close(); return {'concluidos': contagem_concluidos, 'retificados': contagem_retificados}
+
+# --- FUNÇÕES ADICIONADAS PARA RELATÓRIOS AVANÇADOS ---
+def get_entregas_filtradas(data_inicio, data_fim, status_ids=None):
+    """ Busca entregas com base em um período e uma lista de status. """
+    conn = conectar()
+    params = [data_inicio, data_fim]
+    
+    query = """
+        SELECT e.data_vencimento, e.horario, e.responsavel, e.observacoes,
+               c.nome as nome_cliente, c.tipo_envio, c.contato,
+               s.nome as nome_status
+        FROM entregas e
+        JOIN clientes c ON e.cliente_id = c.id
+        LEFT JOIN status s ON e.status_id = s.id
+        WHERE e.data_vencimento BETWEEN ? AND ?
+    """
+    
+    if status_ids:
+        placeholders = ','.join('?' for _ in status_ids)
+        query += f" AND e.status_id IN ({placeholders})"
+        params.extend(status_ids)
+        
+    query += " ORDER BY e.data_vencimento, e.horario"
+    
+    entregas = conn.execute(query, params).fetchall()
     conn.close()
-    return {'concluidos': contagem_concluidos, 'retificados': contagem_retificados}
+    return [dict(row) for row in entregas]
+
+def get_logs_filtrados(data_inicio, data_fim, usuario_nome=None):
+    """ Busca logs com base em um período e, opcionalmente, um usuário. """
+    conn = conectar()
+    params = [f"{data_inicio} 00:00:00", f"{data_fim} 23:59:59"]
+    
+    query = """
+        SELECT timestamp, usuario_nome, acao, detalhes
+        FROM logs
+        WHERE timestamp BETWEEN ? AND ?
+    """
+    
+    if usuario_nome and usuario_nome != "Todos":
+        query += " AND usuario_nome = ?"
+        params.append(usuario_nome)
+        
+    query += " ORDER BY timestamp DESC"
+    
+    logs = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(row) for row in logs]

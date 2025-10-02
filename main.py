@@ -388,7 +388,6 @@ class ConfigDialog(QDialog):
         self.settings.setValue("geral/minutos_lembrete", self.lembrete_spin.value()); QMessageBox.information(self, "Salvo", "Configurações salvas. Por favor, reinicie o programa para que todas as alterações tenham efeito."); self.accept()
 
 # --- Janela Principal ---
-# --- Janela Principal ATUALIZADA com o novo layout do Dashboard ---
 class CalendarWindow(QMainWindow):
     def __init__(self, usuario):
         super().__init__()
@@ -405,84 +404,82 @@ class CalendarWindow(QMainWindow):
         self.setup_tray_icon()
         self.setup_timer_notificacoes()
         self.populate_calendar()
-        
     def setup_ui(self):
-        # 1. Navegação do Mês (Inalterado)
-        nav_layout = QHBoxLayout()
-        prev_btn = QPushButton("< Mês Anterior")
-        prev_btn.clicked.connect(self.prev_month)
-        self.month_label = QLabel()
-        self.month_label.setAlignment(Qt.AlignCenter)
-        next_btn = QPushButton("Próximo Mês >")
-        next_btn.clicked.connect(self.next_month)
-        nav_layout.addWidget(prev_btn)
-        nav_layout.addWidget(self.month_label)
-        nav_layout.addWidget(next_btn)
-        self.main_layout.addLayout(nav_layout)
-        
-        # --- NOVO: Label único para o Dashboard ---
-        self.dashboard_label = QLabel()
-        self.dashboard_label.setAlignment(Qt.AlignCenter)
-        self.main_layout.addWidget(self.dashboard_label) # Adicionado aqui!
-        # --- FIM DA ADIÇÃO ---
-
-        # 2. Cabeçalho dos dias da semana (Inalterado)
-        header_layout = QGridLayout()
-        dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
-        for i, dia in enumerate(dias):
-            header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
-        self.main_layout.addLayout(header_layout)
-        
-        # 3. Grade do Calendário (Inalterado)
-        self.calendar_grid = QGridLayout()
-        self.calendar_grid.setSpacing(0)
-        self.main_layout.addLayout(self.calendar_grid)
-        
-        # --- REMOVIDO: O antigo layout do dashboard que ficava aqui foi removido ---
-        
-        # 4. Botões de Ação (Inalterado)
-        action_layout = QHBoxLayout()
-        config_btn = QPushButton("Configurações")
-        config_btn.clicked.connect(self.abrir_configuracoes)
-        clientes_btn = QPushButton("Gerenciar Clientes")
-        clientes_btn.clicked.connect(self.gerenciar_clientes)
-        status_btn = QPushButton("Gerenciar Status")
-        status_btn.clicked.connect(self.manage_status)
-        export_btn = QPushButton("Exportar Mês")
-        export_btn.clicked.connect(self.export_month)
-        action_layout.addWidget(config_btn)
-        action_layout.addStretch()
-        action_layout.addWidget(clientes_btn)
-        action_layout.addWidget(status_btn)
-        action_layout.addWidget(export_btn)
-        self.main_layout.addLayout(action_layout)
-        
+        nav_layout = QHBoxLayout(); prev_btn = QPushButton("< Mês Anterior"); prev_btn.clicked.connect(self.prev_month); self.month_label = QLabel(); self.month_label.setAlignment(Qt.AlignCenter); next_btn = QPushButton("Próximo Mês >"); next_btn.clicked.connect(self.next_month); nav_layout.addWidget(prev_btn); nav_layout.addWidget(self.month_label); nav_layout.addWidget(next_btn); self.main_layout.addLayout(nav_layout)
+        self.dashboard_label = QLabel(); self.dashboard_label.setAlignment(Qt.AlignCenter); self.main_layout.addWidget(self.dashboard_label)
+        header_layout = QGridLayout(); dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+        for i, dia in enumerate(dias): header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
+        self.main_layout.addLayout(header_layout); self.calendar_grid = QGridLayout(); self.calendar_grid.setSpacing(0); self.main_layout.addLayout(self.calendar_grid)
+        action_layout = QHBoxLayout(); config_btn = QPushButton("Configurações"); config_btn.clicked.connect(self.abrir_configuracoes); clientes_btn = QPushButton("Gerenciar Clientes"); clientes_btn.clicked.connect(self.gerenciar_clientes); status_btn = QPushButton("Gerenciar Status"); status_btn.clicked.connect(self.manage_status); export_btn = QPushButton("Exportar Mês"); export_btn.clicked.connect(self.export_month)
+        action_layout.addWidget(config_btn); action_layout.addStretch(); action_layout.addWidget(clientes_btn); action_layout.addWidget(status_btn); action_layout.addWidget(export_btn); self.main_layout.addLayout(action_layout)
+    def setup_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        caminho_icone = os.path.join('imagens', 'icon.png')
+        icon = QIcon(caminho_icone)
+        if icon.isNull():
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        else:
+            self.tray_icon.setIcon(icon)
+        self.tray_icon.setToolTip("Agendador de Entregas"); self.tray_icon.show()
+    def setup_timer_notificacoes(self):
+        settings = QSettings()
+        minutos_lembrete = settings.value("geral/minutos_lembrete", 15, type=int)
+        self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.verificar_agendamentos_proximos(minutos_lembrete)); self.timer.start(60000)
+    def verificar_agendamentos_proximos(self, minutos_antecedencia):
+        agora = datetime.now(); limite = agora + timedelta(minutes=minutos_antecedencia)
+        data_hoje = agora.strftime("%Y-%m-%d"); hora_inicio = agora.strftime("%H:%M"); hora_fim = limite.strftime("%H:%M")
+        agendamentos = database.get_entregas_no_intervalo(data_hoje, hora_inicio, hora_fim)
+        for ag in agendamentos:
+            if ag['id'] not in self.notificados_nesta_sessao:
+                titulo = f"Lembrete de Agendamento ({ag['horario']})"; mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
+                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000); self.notificados_nesta_sessao.add(ag['id'])
+    def closeEvent(self, event): self.tray_icon.hide(); event.accept()
     def populate_calendar(self):
-        for i in reversed(range(self.calendar_grid.count())):
-            self.calendar_grid.itemAt(i).widget().setParent(None)
-        year = self.current_date.year
-        month = self.current_date.month
+        for i in reversed(range(self.calendar_grid.count())): self.calendar_grid.itemAt(i).widget().setParent(None)
+        year = self.current_date.year; month = self.current_date.month
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
         
-        # --- ATUALIZA O TEXTO DO NOVO DASHBOARD com HTML ---
         stats = database.get_estatisticas_mensais(year, month)
-        texto_dashboard = (
-            f"Concluídos no Mês: <b style='color:green;'>{stats['concluidos']}</b>"
-            f"&nbsp;&nbsp;|&nbsp;&nbsp;"
-            f"Retificados no Mês: <b style='color:#17a2b8;'>{stats['retificados']}</b>"
-        )
+        texto_dashboard = (f"Concluídos no Mês: <b style='color:green;'>{stats['concluidos']}</b>"
+                           f"&nbsp;&nbsp;|&nbsp;&nbsp;"
+                           f"Retificados no Mês: <b style='color:#17a2b8;'>{stats['retificados']}</b>")
         self.dashboard_label.setText(texto_dashboard)
-        # --- FIM DA ATUALIZAÇÃO ---
 
-        status_dias = database.get_status_dias_para_mes(year, month)
-        month_calendar = calendar.monthcalendar(year, month)
+        status_dias = database.get_status_dias_para_mes(year, month); month_calendar = calendar.monthcalendar(year, month)
         for week_num, week in enumerate(month_calendar):
             for day_num, day in enumerate(week):
                 if day != 0:
-                    date = QDate(year, month, day)
-                    info_do_dia = status_dias.get(day)
-                    cell = DayCellWidget(date, info_do_dia, self)
-                    cell.clicked.connect(self.open_day_view)
-                    self.calendar_grid.addWidget(cell, week_num, day_num)
+                    date = QDate(year, month, day); info_do_dia = status_dias.get(day); cell = DayCellWidget(date, info_do_dia, self)
+                    cell.clicked.connect(self.open_day_view); self.calendar_grid.addWidget(cell, week_num, day_num)
+    def prev_month(self): self.current_date -= timedelta(days=self.current_date.day + 1); self.populate_calendar()
+    def next_month(self): _, days_in_month = calendar.monthrange(self.current_date.year, self.current_date.month); self.current_date += timedelta(days=days_in_month - self.current_date.day + 1); self.populate_calendar()
+    def open_day_view(self, date): dialog = DayViewDialog(date, self.usuario_atual, self); dialog.exec_()
+    def gerenciar_clientes(self): dialog = JanelaClientes(self.usuario_atual, self); dialog.exec_()
+    def manage_status(self): dialog = StatusDialog(self.usuario_atual, self); dialog.exec_()
+    def abrir_configuracoes(self):
+        dialog = ConfigDialog(self)
+        dialog.exec_()
+    def export_month(self):
+        year = self.current_date.year; month = self.current_date.month; entregas = database.get_entregas_para_relatorio(year, month)
+        if not entregas: QMessageBox.information(self, "Exportar Mês", "Não há agendamentos neste mês para exportar."); return
+        dialog = QFileDialog(self); dialog.setAcceptMode(QFileDialog.AcceptSave); dialog.setNameFilter("Arquivos PDF (*.pdf);;Arquivos CSV (*.csv)"); dialog.setDefaultSuffix("pdf"); nome_sugerido = f"Relatorio_Agendamentos_{year}-{month:02d}"; dialog.selectFile(nome_sugerido)
+        if dialog.exec_():
+            nome_arquivo = dialog.selectedFiles()[0]; titulo = f"Relatório de Agendamentos - {self.current_date.strftime('%B de %Y')}"
+            if nome_arquivo.endswith(".pdf"): export.exportar_para_pdf(entregas, nome_arquivo, titulo)
+            elif nome_arquivo.endswith(".csv"): export.exportar_para_csv(entregas, nome_arquivo)
+
+if __name__ == '__main__':
+    QApplication.setOrganizationName("SuaOrganizacao")
+    QApplication.setApplicationName("Agendador")
+    database.iniciar_db()
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     
-    # ... (O restante do código da CalendarWindow e de todas as outras classes é exatamente o mesmo)
+    login = LoginDialog()
+    if login.exec_() == QDialog.Accepted:
+        usuario_logado = login.usuario_logado
+        window = CalendarWindow(usuario_logado)
+        window.show()
+        sys.exit(app.exec_())
+    else:
+        sys.exit(0)
