@@ -148,6 +148,9 @@ class DialogoCliente(QDialog):
         self.nivel_edit = QLineEdit()
         self.detalhes_edit = QTextEdit()
         self.detalhes_edit.setPlaceholderText("Detalhes adicionais sobre o cliente...")
+        self.num_computadores_spin = QSpinBox()
+        self.num_computadores_spin.setRange(0, 9999)
+        form_layout.addRow("Nº de Computadores:", self.num_computadores_spin)
         form_layout.addRow("Nome*:", self.nome_edit)
         form_layout.addRow("Tipo de Envio*:", self.tipo_envio_combo)
         form_layout.addRow("Email/Local*:", self.contato_edit)
@@ -175,7 +178,7 @@ class DialogoCliente(QDialog):
         if not nome or not tipo_envio or not contato:
             QMessageBox.warning(self, "Campos Obrigatórios", "Por favor, preencha os campos Nome, Tipo de Envio e Email/Local.")
             return
-        dados_cliente = { "nome": nome, "tipo_envio": tipo_envio, "contato": contato, "gera_recibo": self.gera_recibo_check.isChecked(), "conta_xmls": self.conta_xmls_check.isChecked(), "nivel": self.nivel_edit.text().strip(), "detalhes": self.detalhes_edit.toPlainText().strip() }
+        dados_cliente = { "nome": nome, "tipo_envio": tipo_envio, "contato": contato, "gera_recibo": self.gera_recibo_check.isChecked(), "conta_xmls": self.conta_xmls_check.isChecked(), "nivel": self.nivel_edit.text().strip(), "detalhes": self.detalhes_edit.toPlainText().strip(), "numero_computadores": self.num_computadores_spin.value() }
         usuario_nome = self.usuario_logado['username']
         if self.cliente_id:
             database.atualizar_cliente(self.cliente_id, **dados_cliente, usuario_logado=usuario_nome)
@@ -316,18 +319,22 @@ class StatusDialog(QDialog):
         if reply == QMessageBox.Yes: database.deletar_status(status_data['id'], self.usuario_logado['username']); self.carregar_status(); self.parent().populate_calendar()
 # main.py
 
+# main.py
+
+# main.py
+
+# COLE ESTE BLOCO INTEIRO NO LUGAR DA SUA CLASSE EntregaDialog ANTIGA
+
 class EntregaDialog(QDialog):
-    # SUBSTITUA TODA A SUA CLASSE POR ESTA VERSÃO ATUALIZADA
     def __init__(self, usuario_logado, date, entrega_data=None, parent=None):
         super().__init__(parent)
         self.entrega_data = entrega_data
         self.usuario_logado = usuario_logado
-        self.date = date  # Armazena a data para usar no rascunho
+        self.date = date
 
         self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
         layout = QFormLayout(self)
 
-        # --- Definição dos Componentes ---
         self.cliente_combo = QComboBox()
         self.status_combo = QComboBox()
         self.responsavel_edit = QLineEdit()
@@ -344,11 +351,9 @@ class EntregaDialog(QDialog):
         self.salvar_btn = QPushButton("Salvar")
         self.cancelar_btn = QPushButton("Cancelar")
 
-        # --- Lógica de Preenchimento e Configuração ---
         self.responsavel_edit.setText(self.usuario_logado['username'])
-        self.carregar_combos() # Carrega os dados e verifica se há clientes
+        self.carregar_combos()
 
-        # --- Adiciona os componentes ao layout da janela ---
         layout.addRow("Cliente:", self.cliente_combo)
         layout.addRow("Status:", self.status_combo)
         layout.addRow("Responsável:", self.responsavel_edit)
@@ -356,18 +361,14 @@ class EntregaDialog(QDialog):
         layout.addRow("Observações:", self.observacoes_edit)
 
         if entrega_data:
-            # Carrega dados existentes se estiver no modo de edição
             index_cliente = self.cliente_combo.findData(entrega_data['cliente_id'])
             if index_cliente > -1: self.cliente_combo.setCurrentIndex(index_cliente)
-            
             index_status = self.status_combo.findData(entrega_data['status_id'])
             if index_status > -1: self.status_combo.setCurrentIndex(index_status)
-            
             if entrega_data.get('responsavel'):
                  self.responsavel_edit.setText(entrega_data['responsavel'])
             self.observacoes_edit.setText(entrega_data['observacoes'])
         else:
-            # Define o status "PENDENTE" como padrão para novos agendamentos
             index_pendente = self.status_combo.findText("PENDENTE")
             if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
             
@@ -377,23 +378,19 @@ class EntregaDialog(QDialog):
         botoes_layout.addWidget(self.cancelar_btn)
         layout.addRow(botoes_layout)
         
-        # --- Conexão dos Sinais (Eventos) ---
         self.salvar_btn.clicked.connect(self.accept)
         self.cancelar_btn.clicked.connect(self.reject)
         copiar_btn.clicked.connect(self.copiar_rascunho)
         self.cliente_combo.currentIndexChanged.connect(self.atualizar_rascunho)
         self.status_combo.currentIndexChanged.connect(self.atualizar_rascunho)
 
-        self.atualizar_rascunho() # Gera o texto do rascunho ao iniciar
+        self.atualizar_rascunho()
 
     def carregar_combos(self):
-        # Refatorado para legibilidade e robustez
         self.cliente_combo.clear()
         self.status_combo.clear()
-
         clientes = database.listar_clientes()
         status_list = database.listar_status()
-
         if not clientes:
             self.cliente_combo.addItem("Nenhum cliente cadastrado")
             self.cliente_combo.setEnabled(False)
@@ -403,45 +400,45 @@ class EntregaDialog(QDialog):
         else:
             for cliente in clientes:
                 self.cliente_combo.addItem(cliente['nome'], cliente['id'])
-
         for status in status_list:
             self.status_combo.addItem(status['nome'], status['id'])
 
+    def atualizar_rascunho(self):
+        if not self.cliente_combo.isEnabled(): return
+        nome_cliente = self.cliente_combo.currentText()
+        nome_status = self.status_combo.currentText()
+        data_str = self.date.toString("MM/yyyy")
+        if nome_status.lower() == 'retificado':
+            texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
+        else:
+            texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
+        self.rascunho_edit.setText(texto_rascunho)
+    
+    def copiar_rascunho(self):
+        texto_para_copiar = self.rascunho_edit.text()
+        if texto_para_copiar:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(texto_para_copiar)
+            botao = self.sender()
+            botao.setEnabled(False) 
+            botao.setText("Copiado!")
+            def restaurar_botao():
+                try:
+                    botao.setText("Copiar")
+                    botao.setEnabled(True)
+                except RuntimeError: pass
+            QTimer.singleShot(1500, restaurar_botao)
+
+    # --- A FUNÇÃO QUE ESTAVA FALTANDO ESTÁ AQUI ---
     def get_data(self):
-        # Refatorado para melhor legibilidade
+        """Coleta os dados dos campos do formulário e os retorna em um dicionário."""
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
             "responsavel": self.responsavel_edit.text().strip(),
             "observacoes": self.observacoes_edit.toPlainText().strip()
         }
-    
-    def atualizar_rascunho(self):
-        """Gera a string do rascunho com base nos campos atuais."""
-        if not self.cliente_combo.isEnabled():
-            return
 
-        nome_cliente = self.cliente_combo.currentText()
-        nome_status = self.status_combo.currentText()
-        data_str = self.date.toString("MM/yyyy")
-        
-        if nome_status.lower() == 'retificado':
-            texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
-        else:
-            texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
-            
-        self.rascunho_edit.setText(texto_rascunho)
-
-    def copiar_rascunho(self):
-        """Copia o texto do rascunho para a área de transferência."""
-        texto_para_copiar = self.rascunho_edit.text()
-        if texto_para_copiar:
-            clipboard = QApplication.clipboard()
-            clipboard.setText(texto_para_copiar)
-            
-            botao = self.sender()
-            botao.setText("Copiado!")
-            QTimer.singleShot(1500, lambda: botao.setText("Copiar"))
 class DayViewDialog(QDialog):
     def __init__(self, date, usuario_logado, parent=None):
         super().__init__(parent); self.date = date; self.usuario_logado = usuario_logado; self.setWindowTitle(f"Agenda para {date.toString('dd/MM/yyyy')}"); self.setMinimumSize(800, 600)
@@ -470,14 +467,52 @@ class DayViewDialog(QDialog):
                 hora_atual = hora_atual.addSecs(intervalo * 60)
             return horarios
     def carregar_agenda_dia(self):
-        self.tabela_agenda.setRowCount(0); self.tabela_agenda.setRowCount(len(self.horarios)); agendamentos_dia = database.get_entregas_por_dia(self.date.toString("yyyy-MM-dd"))
+        self.tabela_agenda.setRowCount(0)
+        self.tabela_agenda.setRowCount(len(self.horarios))
+        agendamentos_dia = database.get_entregas_por_dia(self.date.toString("yyyy-MM-dd"))
+        
         for i, horario in enumerate(self.horarios):
-            item_horario = QTableWidgetItem(horario); item_horario.setTextAlignment(Qt.AlignCenter); self.tabela_agenda.setItem(i, 0, item_horario)
+            item_horario = QTableWidgetItem(horario)
+            item_horario.setTextAlignment(Qt.AlignCenter)
+            self.tabela_agenda.setItem(i, 0, item_horario)
+
             if horario in agendamentos_dia:
-                agendamento = agendamentos_dia[horario]; self.tabela_agenda.setItem(i, 1, QTableWidgetItem(agendamento['nome_cliente'])); self.tabela_agenda.setItem(i, 2, QTableWidgetItem(agendamento['contato'])); self.tabela_agenda.setItem(i, 3, QTableWidgetItem(agendamento['tipo_envio'])); item_status = QTableWidgetItem(agendamento['nome_status']); item_status.setBackground(QColor(agendamento['cor_hex']))
-                self.tabela_agenda.setItem(i, 4, item_status); item_horario.setData(Qt.UserRole, agendamento)
+                agendamento = agendamentos_dia[horario]
+                
+                # Preenche a tabela com os dados principais (código existente)
+                self.tabela_agenda.setItem(i, 1, QTableWidgetItem(agendamento['nome_cliente']))
+                self.tabela_agenda.setItem(i, 2, QTableWidgetItem(agendamento['contato']))
+                self.tabela_agenda.setItem(i, 3, QTableWidgetItem(agendamento['tipo_envio']))
+                
+                item_status = QTableWidgetItem(agendamento['nome_status'])
+                item_status.setBackground(QColor(agendamento['cor_hex']))
+                self.tabela_agenda.setItem(i, 4, item_status)
+                
+                item_horario.setData(Qt.UserRole, agendamento)
+
+                # --- NOVA LÓGICA PARA CRIAR E APLICAR O TOOLTIP ---
+                
+                # 1. Pega os dados extras do dicionário 'agendamento'
+                observacoes = agendamento.get('observacoes', 'Nenhuma observação.')
+                num_computadores = agendamento.get('numero_computadores', 0)
+
+                # 2. Cria o texto formatado para o tooltip (usando um pouco de HTML)
+                texto_tooltip = (
+                    f"<b>Nº de Computadores:</b> {num_computadores}<br><hr>"
+                    f"<b>Observações:</b><br>{observacoes}"
+                )
+
+                # 3. Aplica o mesmo tooltip para todas as células da linha do agendamento
+                for col in range(self.tabela_agenda.columnCount()):
+                    item = self.tabela_agenda.item(i, col)
+                    if item: # Garante que o item existe antes de aplicar
+                        item.setToolTip(texto_tooltip)
+                
+                # --- FIM DA NOVA LÓGICA ---
+
             else:
-                for j in range(1, 5): self.tabela_agenda.setItem(i, j, QTableWidgetItem(""))
+                for j in range(1, 5):
+                    self.tabela_agenda.setItem(i, j, QTableWidgetItem(""))
     def gerenciar_agendamento_duplo_clique(self, row, column):
         item_horario = self.tabela_agenda.item(row, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
@@ -770,8 +805,7 @@ class JanelaUsuarios(QDialog):
 
 class CalendarWindow(QMainWindow):
     def __init__(self, usuario):
-        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.feriados = {}; self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()
-    # main.py
+        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.feriados = {}; self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()    # main.py
     def setup_ui(self):
         # Layout de navegação (mês anterior/próximo)
         nav_layout = QHBoxLayout()
@@ -835,21 +869,35 @@ class CalendarWindow(QMainWindow):
         self.main_layout.addLayout(action_layout)
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
-        caminho_icone = os.path.join('imagens', 'icon.png')
+        caminho_icone = os.path.join('imagens', 'icon.ico')
         icon = QIcon(caminho_icone)
-        if icon.isNull(): self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        else: self.tray_icon.setIcon(icon)
-        self.tray_icon.setToolTip("Agendador de Entregas"); self.tray_icon.show()
+        if icon.isNull():
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        else:
+            self.tray_icon.setIcon(icon)
+        
+        self.tray_icon.setToolTip("Agendador de Entregas")
+        self.tray_icon.show()
     def setup_timer_notificacoes(self):
         settings = QSettings(); minutos_lembrete = settings.value("geral/minutos_lembrete", 15, type=int)
         self.timer = QTimer(self); self.timer.timeout.connect(lambda: self.verificar_agendamentos_proximos(minutos_lembrete)); self.timer.start(60000)
+
     def verificar_agendamentos_proximos(self, minutos_antecedencia):
-        agora = datetime.now(); limite = agora + timedelta(minutes=minutos_antecedencia); data_hoje = agora.strftime("%Y-%m-%d"); hora_inicio = agora.strftime("%H:%M"); hora_fim = limite.strftime("%H:%M")
+        agora = datetime.now()
+        limite = agora + timedelta(minutes=minutos_antecedencia)
+        data_hoje = agora.strftime("%Y-%m-%d")
+        hora_inicio = agora.strftime("%H:%M")
+        hora_fim = limite.strftime("%H:%M")
+        
         agendamentos = database.get_entregas_no_intervalo(data_hoje, hora_inicio, hora_fim)
+        
         for ag in agendamentos:
-            if ag['id'] not in self.notificados_nesta_sessao:
-                titulo = f"Lembrete de Agendamento ({ag['horario']})"; mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
-                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000); self.notificados_nesta_sessao.add(ag['id'])
+
+            if ag['id'] not in self.notificados_nesta_sessao and ag.get('nome_status', '').lower() == 'pendente':
+                titulo = f"Lembrete de Agendamento ({ag['horario']})"
+                mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
+                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000)
+                self.notificados_nesta_sessao.add(ag['id'])
     def closeEvent(self, event): self.tray_icon.hide(); event.accept()
     def populate_calendar(self):
         for i in reversed(range(self.calendar_grid.count())): self.calendar_grid.itemAt(i).widget().setParent(None)

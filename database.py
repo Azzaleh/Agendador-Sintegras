@@ -16,7 +16,7 @@ def iniciar_db():
     
     cursor.execute('CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)')
     cursor.execute('CREATE TABLE IF NOT EXISTS status (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL UNIQUE, cor_hex TEXT NOT NULL)')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS clientes (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, tipo_envio TEXT NOT NULL, contato TEXT NOT NULL, gera_recibo BOOLEAN NOT NULL DEFAULT 0, conta_xmls BOOLEAN NOT NULL DEFAULT 0, nivel TEXT, outros_detalhes TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS clientes (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, tipo_envio TEXT NOT NULL, contato TEXT NOT NULL, gera_recibo BOOLEAN NOT NULL DEFAULT 0, conta_xmls BOOLEAN NOT NULL DEFAULT 0, nivel TEXT, outros_detalhes TEXT, numero_computadores INTEGER DEFAULT 0)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS entregas (id INTEGER PRIMARY KEY AUTOINCREMENT, data_vencimento TEXT NOT NULL, horario TEXT NOT NULL, status_id INTEGER, cliente_id INTEGER NOT NULL, responsavel TEXT, observacoes TEXT, FOREIGN KEY (status_id) REFERENCES status (id) ON DELETE SET NULL, FOREIGN KEY (cliente_id) REFERENCES clientes (id) ON DELETE CASCADE)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, usuario_nome TEXT NOT NULL, acao TEXT NOT NULL, detalhes TEXT)''')
     
@@ -93,16 +93,24 @@ def deletar_usuario(id, usuario_logado):
     registrar_log(usuario_logado, 'USUARIO_DELETADO', f'Usuário: {nome_usuario}')
     return True # Retorna True para indicar sucesso
 
-def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, usuario_logado):
+# database.py
+
+def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
     conn = conectar()
-    conn.execute("INSERT INTO clientes (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, outros_detalhes) VALUES (?, ?, ?, ?, ?, ?, ?)", (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes))
+    conn.execute(
+        "INSERT INTO clientes (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, outros_detalhes, numero_computadores) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores)
+    )
     conn.commit()
     conn.close()
     registrar_log(usuario_logado, "CLIENTE_CRIADO", f"Cliente: {nome}")
 
-def atualizar_cliente(id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, usuario_logado):
+def atualizar_cliente(id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
     conn = conectar()
-    conn.execute("UPDATE clientes SET nome=?, tipo_envio=?, contato=?, gera_recibo=?, conta_xmls=?, nivel=?, outros_detalhes=? WHERE id=?", (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, id))
+    conn.execute(
+        "UPDATE clientes SET nome=?, tipo_envio=?, contato=?, gera_recibo=?, conta_xmls=?, nivel=?, outros_detalhes=?, numero_computadores=? WHERE id=?",
+        (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, id)
+    )
     conn.commit()
     conn.close()
     registrar_log(usuario_logado, "CLIENTE_ATUALIZADO", f"Cliente ID: {id}, Nome: {nome}")
@@ -240,7 +248,7 @@ def deletar_entrega(id, usuario_logado):
 
 def get_entregas_por_dia(data):
     conn = conectar()
-    query = "SELECT e.id, e.data_vencimento, e.horario, e.responsavel, e.observacoes, e.cliente_id, e.status_id, c.nome as nome_cliente, c.tipo_envio, c.contato, s.nome as nome_status, s.cor_hex FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento = ? "
+    query = "SELECT e.id, e.data_vencimento, e.horario, e.responsavel, e.observacoes, e.cliente_id, e.status_id, c.nome as nome_cliente, c.tipo_envio, c.contato, c.numero_computadores, s.nome as nome_status, s.cor_hex FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento = ? "
     entregas_dia = conn.execute(query, (data,)).fetchall()
     conn.close()
     return {entrega['horario']: dict(entrega) for entrega in entregas_dia}
