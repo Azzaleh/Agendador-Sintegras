@@ -1,6 +1,7 @@
 # main.py
 import sys
 import os
+from urllib.request import urlopen
 from datetime import datetime, timedelta
 import calendar
 import pandas as pd
@@ -10,10 +11,34 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
                              QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem,QMenu)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
-from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings
+from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread, pyqtSignal
 
 import database
 import export
+
+VERSAO_ATUAL = "1.0"
+
+class UpdateCheckerThread(QThread):
+    """
+    Thread que verifica em segundo plano se há uma nova versão no GitHub.
+    """
+    update_found = pyqtSignal(str) # Sinal que emitirá a nova versão encontrada
+
+    def run(self):
+        # IMPORTANTE: SUBSTITUA COM SEU USUÁRIO E NOME DO REPOSITÓRIO
+        url_versao = "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPOSITORIO/main/version.txt"
+        
+        try:
+            with urlopen(url_versao, timeout=5) as response:
+                versao_github = response.read().decode('utf-8').strip()
+            
+            # Compara as versões
+            if versao_github > VERSAO_ATUAL:
+                self.update_found.emit(versao_github) # Emite o sinal se encontrou atualização
+        except Exception as e:
+            # Falha silenciosamente se não houver internet ou o arquivo não existir
+            print(f"Erro ao verificar atualização: {e}")
+
 
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
@@ -805,7 +830,7 @@ class JanelaUsuarios(QDialog):
 
 class CalendarWindow(QMainWindow):
     def __init__(self, usuario):
-        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.feriados = {}; self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar()    # main.py
+        super().__init__(); self.usuario_atual = usuario; titulo = f"Agendador Mensal - Bem-vindo, {self.usuario_atual['username']}!"; self.setWindowTitle(titulo); self.setGeometry(100, 100, 1100, 800); self.current_date = datetime.now(); self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget); self.notificados_nesta_sessao = set(); self.feriados = {}; self.setup_ui(); self.setup_tray_icon(); self.setup_timer_notificacoes(); self.populate_calendar();self.verificar_atualizacao()
     def setup_ui(self):
         # Layout de navegação (mês anterior/próximo)
         nav_layout = QHBoxLayout()
@@ -867,6 +892,20 @@ class CalendarWindow(QMainWindow):
         
         # Adiciona o layout dos botões ao layout principal da janela
         self.main_layout.addLayout(action_layout)
+
+        def verificar_atualizacao(self):
+            """Inicia a thread para verificar atualizações."""
+            self.update_thread = UpdateCheckerThread()
+            self.update_thread.update_found.connect(self.mostrar_dialogo_atualizacao)
+            self.update_thread.start()
+
+    def mostrar_dialogo_atualizacao(self, nova_versao):
+        """Exibe uma mensagem informando sobre a nova versão."""
+        titulo = "Atualização Disponível!"
+        mensagem = (f"Uma nova versão ({nova_versao}) do programa está disponível!\n\n"
+                    "Por favor, acesse a página do projeto no GitHub para baixar a versão mais recente.")
+        QMessageBox.information(self, titulo, mensagem)
+
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
         caminho_icone = os.path.join('imagens', 'icon.ico')
