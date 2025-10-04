@@ -1,6 +1,6 @@
-# main.py
 import sys
 import os
+import collections
 import subprocess
 from pathlib import Path
 from urllib.request import urlopen
@@ -11,14 +11,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QPushButton, QLabel, QDialog, QLineEdit, QComboBox, QMessageBox, 
                              QFileDialog, QFormLayout, QCheckBox, QTextEdit, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
-                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem,QMenu)
+                             QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, QListWidgetItem,QMenu,QTreeWidget,QTreeWidgetItem)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
 from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread, pyqtSignal
 
 import database
 import export
 
-VERSAO_ATUAL = "1.1"
+VERSAO_ATUAL = "1.2"
 
 class UpdateCheckerThread(QThread):
 
@@ -726,22 +726,107 @@ class ConfigDialog(QDialog):
             self.settings.setValue("horarios/modo", "manual"); self.settings.setValue("horarios/lista_manual", self.lista_manual_edit.text())
         self.settings.setValue("geral/minutos_lembrete", self.lembrete_spin.value()); QMessageBox.information(self, "Salvo", "Configurações salvas. Por favor, reinicie o programa para que todas as alterações tenham efeito."); self.accept()
 
+class SecretReportDialog(QDialog):
+    def __init__(self, raw_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Relatório de Atividade por Usuário (Secreto)")
+        self.setMinimumSize(600, 700)
+        
+        layout = QVBoxLayout(self)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Agrupamento", "Contagem"])
+        self.tree.setColumnWidth(0, 350)
+        layout.addWidget(self.tree)
+
+        processed_data = self.processar_dados(raw_data)
+        self.popular_arvore(processed_data)
+        
+        self.tree.expandAll()
+
+    def processar_dados(self, raw_data):
+        """Agrupa os status e calcula o total por usuário."""
+        data = collections.defaultdict(lambda: collections.defaultdict(lambda: collections.defaultdict(int)))
+        
+        for row in raw_data:
+            mes = row['mes']
+            responsavel = row['responsavel']
+            status = row['nome_status']
+            contagem = row['contagem']
+            
+            if status.lower() in ['feito', 'feito e enviado']:
+                status_agrupado = 'Concluído (Total)'
+            else:
+                status_agrupado = status
+            
+            # Adiciona a contagem ao status específico
+            data[mes][responsavel][status_agrupado] += contagem
+            
+            # --- NOVO: Adiciona a mesma contagem a um totalizador para o usuário ---
+            data[mes][responsavel]['Total'] += contagem
+            
+        return data
+
+    def popular_arvore(self, data):
+        """Preenche a QTreeWidget com os dados processados, incluindo o total."""
+        self.tree.clear()
+        
+        for mes, usuarios in sorted(data.items(), reverse=True):
+            mes_item = QTreeWidgetItem(self.tree, [f"Mês: {mes}"])
+            mes_item.setFont(0, QFont('Arial', 10, QFont.Bold))
+            
+            for usuario, status_counts in sorted(usuarios.items()):
+                # --- ALTERADO: Pega o total e o remove do dicionário de status ---
+                total_usuario = status_counts.pop('Total', 0)
+                
+                # Exibe o usuário junto com seu total de agendamentos no mês
+                usuario_item = QTreeWidgetItem(mes_item, [f"Usuário: {usuario}", str(total_usuario)])
+                usuario_item.setFont(0, QFont('Arial', 9, QFont.Bold))
+
+                # Itera sobre os status restantes (sem o 'Total')
+                for status, contagem in sorted(status_counts.items()):
+                    status_item = QTreeWidgetItem(usuario_item, [f"   - {status}", str(contagem)])
+
 class RelatorioDialog(QDialog):
     def __init__(self, usuario_logado, parent=None):
-        super().__init__(parent); self.usuario_logado = usuario_logado; self.setWindowTitle("Gerar Relatórios"); self.setMinimumWidth(400)
+        super().__init__(parent)
+        self.usuario_logado = usuario_logado
+        self.setWindowTitle("Gerar Relatórios")
+        self.setMinimumWidth(400)
+        
         layout = QVBoxLayout(self); form_layout = QFormLayout(); self.tipo_relatorio_combo = QComboBox(); self.tipo_relatorio_combo.addItems(["Relatório de Agendamentos", "Relatório de Logs de Atividade"]); self.data_inicio_edit = QDateEdit(QDate.currentDate().addDays(-30)); self.data_inicio_edit.setCalendarPopup(True); self.data_fim_edit = QDateEdit(QDate.currentDate()); self.data_fim_edit.setCalendarPopup(True); self.filtros_agendamento_group = QGroupBox("Filtros de Agendamento"); filtros_agendamento_layout = QVBoxLayout(); self.status_list_widget = QListWidget(); self.status_list_widget.setSelectionMode(QListWidget.MultiSelection); filtros_agendamento_layout.addWidget(QLabel("Filtrar por Status (deixe sem selecionar para incluir todos):")); filtros_agendamento_layout.addWidget(self.status_list_widget); self.filtros_agendamento_group.setLayout(filtros_agendamento_layout); self.filtros_logs_group = QGroupBox("Filtros de Logs"); filtros_logs_layout = QFormLayout(); self.usuario_combo = QComboBox(); filtros_logs_layout.addRow("Filtrar por Usuário:", self.usuario_combo); self.filtros_logs_group.setLayout(filtros_logs_layout)
         self.carregar_filtros(); form_layout.addRow("Tipo de Relatório:", self.tipo_relatorio_combo); form_layout.addRow("Data de Início:", self.data_inicio_edit); form_layout.addRow("Data de Fim:", self.data_fim_edit); layout.addLayout(form_layout); layout.addWidget(self.filtros_agendamento_group); layout.addWidget(self.filtros_logs_group); gerar_btn = QPushButton("Gerar Relatório"); layout.addWidget(gerar_btn, alignment=Qt.AlignCenter); gerar_btn.clicked.connect(self.gerar_relatorio); self.tipo_relatorio_combo.currentIndexChanged.connect(self.atualizar_filtros_visiveis); self.atualizar_filtros_visiveis()
+
+    
+    def keyPressEvent(self, event):
+    
+        if event.key() == Qt.Key_F12 and self.usuario_logado['username'].lower() == 'admin':
+            self.abrir_relatorio_secreto()
+        else:
+            super().keyPressEvent(event)
+
+    def abrir_relatorio_secreto(self):
+        
+        dados_brutos = database.get_estatisticas_por_usuario_e_status()
+        dialog = SecretReportDialog(dados_brutos, self)
+        dialog.exec_()
+    
+    
     def carregar_filtros(self):
+        
         for status in database.listar_status():
             item = QListWidgetItem(status['nome']); item.setData(Qt.UserRole, status['id']); self.status_list_widget.addItem(item)
         self.usuario_combo.addItem("Todos")
         for username in database.listar_usuarios(): self.usuario_combo.addItem(username)
+
     def atualizar_filtros_visiveis(self):
+        
         if "Agendamentos" in self.tipo_relatorio_combo.currentText():
             self.filtros_agendamento_group.setVisible(True); self.filtros_logs_group.setVisible(False)
         else:
             self.filtros_agendamento_group.setVisible(False); self.filtros_logs_group.setVisible(True)
+
     def gerar_relatorio(self):
+        
         data_inicio = self.data_inicio_edit.date().toString("yyyy-MM-dd"); data_fim = self.data_fim_edit.date().toString("yyyy-MM-dd"); tipo_relatorio = self.tipo_relatorio_combo.currentText()
         dialog = QFileDialog(self); dialog.setAcceptMode(QFileDialog.AcceptSave); dialog.setNameFilter("Arquivos PDF (*.pdf);;Arquivos CSV (*.csv)"); dialog.setDefaultSuffix("pdf")
         if "Agendamentos" in tipo_relatorio:
@@ -761,8 +846,6 @@ class RelatorioDialog(QDialog):
                 if nome_arquivo.endswith(".pdf"): export.exportar_logs_pdf(dados, nome_arquivo, titulo)
                 else: export.exportar_logs_csv(dados, nome_arquivo)
         self.accept()
-
-# --- Janela Principal ---
 
 class DialogoUsuario(QDialog):
     def __init__(self, parent=None, usuario=None):
@@ -822,7 +905,6 @@ class ConfirmacaoSenhaDialog(QDialog):
         cancelar_btn.clicked.connect(self.reject)
 
     def get_senha(self):
-        """Retorna a senha digitada pelo usuário."""
         return self.senha_edit.text()
 
 
@@ -883,17 +965,14 @@ class JanelaUsuarios(QDialog):
             
         username_selecionado = self.tabela.item(linha, 0).text()
 
-        # --- INÍCIO DA NOVA LÓGICA DE VERIFICAÇÃO DE SENHA ---
-        
-        # 1. Pede a senha do administrador logado
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             administrador_logado = self.usuario_logado['username']
 
-            # 2. Verifica se a senha está correta usando a função do database
+            
             if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
-                # 3. Se a senha estiver correta, continua com a edição
+                
                 dialog = DialogoUsuario(self, usuario={"username": username_selecionado})
                 if dialog.exec_() == QDialog.Accepted:
                     novo_username, nova_senha = dialog.get_dados()
@@ -911,7 +990,7 @@ class JanelaUsuarios(QDialog):
                             QMessageBox.information(self, "Sucesso", "Usuário atualizado!")
                             self.carregar_usuarios()
             else:
-                # Se a senha estiver incorreta, exibe um erro
+                
                 QMessageBox.critical(self, "Falha na Autenticação", "Senha de administrador incorreta. Ação cancelada.")
 
     def excluir_usuario(self):
@@ -920,7 +999,7 @@ class JanelaUsuarios(QDialog):
             QMessageBox.warning(self, "Ação Necessária", "Por favor, selecione um usuário para excluir.")
             return
 
-        # 1. Obter dados do usuário selecionado para pegar o ID
+        
         username_selecionado = self.tabela.item(linha, 0).text()
         conn = database.conectar()
         usuario_para_excluir = conn.execute("SELECT * FROM usuarios WHERE username=?", (username_selecionado,)).fetchone()
@@ -930,24 +1009,24 @@ class JanelaUsuarios(QDialog):
             QMessageBox.critical(self, "Erro", "Não foi possível encontrar o usuário no banco de dados.")
             return
 
-        # 2. VERIFICAÇÃO DE SEGURANÇA: Proteger o admin principal (ID 1)
+        
         if usuario_para_excluir['id'] == 1:
             QMessageBox.warning(self, "Ação Proibida", "O usuário administrador principal não pode ser excluído.")
             return
 
-        # 3. VERIFICAÇÃO DE SEGURANÇA: Impedir autoexclusão
+        
         if usuario_para_excluir['id'] == self.usuario_logado['id']:
             QMessageBox.warning(self, "Ação Proibida", "Você não pode excluir seu próprio usuário.")
             return
 
-        # 4. Confirmação de senha do administrador logado
+        
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             administrador_logado = self.usuario_logado['username']
 
             if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
-                # 5. Se tudo estiver correto, exibir confirmação final e proceder com a exclusão
+                
                 reply = QMessageBox.question(self, "Confirmar Exclusão", 
                                              f"Tem certeza que deseja excluir permanentemente o usuário '{username_selecionado}'?",
                                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -957,7 +1036,7 @@ class JanelaUsuarios(QDialog):
                         QMessageBox.information(self, "Sucesso", "Usuário excluído!")
                         self.carregar_usuarios()
                     else:
-                        # Esta mensagem apareceria se o database.py falhasse (por ex, na trava do ID 1)
+                        
                         QMessageBox.critical(self, "Erro", "Ocorreu um erro ao excluir o usuário.")
             else:
                 QMessageBox.critical(self, "Falha na Autenticação", "Senha de administrador incorreta. Ação cancelada.")
@@ -982,9 +1061,9 @@ class CalendarWindow(QMainWindow):
         self.populate_calendar()
         self.verificar_atualizacao()
 
-    # --- NOVAS FUNÇÕES AUXILIARES PARA AS CORES ---
+    
     def _get_cor_porcentagem(self, porcentagem):
-        """Retorna uma cor HTML baseada na porcentagem de conclusão."""
+        
         if porcentagem < 40:
             return "#d9534f"  # Vermelho
         elif porcentagem < 80:
@@ -993,7 +1072,7 @@ class CalendarWindow(QMainWindow):
             return "#5cb85c"  # Verde
 
     def _get_cor_pendentes(self, pendentes, total):
-        """Retorna uma cor HTML baseada no número de clientes pendentes."""
+        
         if total == 0:
             return "#5bc0de" # Azul info se não há clientes
         
@@ -1005,7 +1084,7 @@ class CalendarWindow(QMainWindow):
         else:
             return "#5cb85c"  # Verde (poucos ou nenhum pendente)
 
-    # --- MÉTODO populate_calendar COMPLETAMENTE ATUALIZADO ---
+   
     def populate_calendar(self):
         # Limpa o grid do calendário (código existente)
         for i in reversed(range(self.calendar_grid.count())):
@@ -1015,7 +1094,7 @@ class CalendarWindow(QMainWindow):
         month = self.current_date.month
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
 
-        # --- LÓGICA DO DASHBOARD (sem alteração aqui) ---
+        #LÓGICA DO DASHBOARD
         stats = database.get_estatisticas_mensais(year, month)
         total_clientes = database.get_total_clientes()
         ids_clientes_atendidos = database.get_clientes_com_agendamento_concluido_no_mes(year, month)
@@ -1027,10 +1106,6 @@ class CalendarWindow(QMainWindow):
 
         cor_porcentagem = self._get_cor_porcentagem(porcentagem_conclusao)
         cor_pendentes = self._get_cor_pendentes(clientes_pendentes, total_clientes)
-
-        # --- ALTERAÇÕES NO HTML ABAIXO ---
-        # 1. Removemos o width='100%' da tag <table>
-        # 2. Adicionamos style='color:...' nas tags <b> dos números principais
         texto_dashboard = f"""
         <div style="text-align: center;">
             <table style="margin: auto;">
@@ -1053,7 +1128,6 @@ class CalendarWindow(QMainWindow):
         """
         self.dashboard_label.setText(texto_dashboard)
 
-        # Continua com a população do calendário (código existente)
         status_dias = database.get_status_dias_para_mes(year, month)
         month_calendar = calendar.monthcalendar(year, month)
         for week_num, week in enumerate(month_calendar):
@@ -1067,17 +1141,14 @@ class CalendarWindow(QMainWindow):
 
 
     def setup_ui(self):
-        # 1. Label do Mês - Agora no topo, em sua própria linha
+
         self.month_label = QLabel()
         self.month_label.setAlignment(Qt.AlignCenter)
         self.main_layout.addWidget(self.month_label) # Adicionado primeiro
 
-        # 2. Label do Dashboard - Apenas inicializado aqui
-        # Ele será posicionado dentro do layout de navegação
         self.dashboard_label = QLabel()
         self.dashboard_label.setAlignment(Qt.AlignCenter)
 
-        # 3. Layout de Navegação e Dashboard (tudo na mesma linha)
         nav_layout = QHBoxLayout()
         prev_btn = QPushButton("< Mês Anterior")
         next_btn = QPushButton("Próximo Mês >")
@@ -1094,19 +1165,16 @@ class CalendarWindow(QMainWindow):
         # Adiciona a linha de navegação/dashboard ao layout principal
         self.main_layout.addLayout(nav_layout)
 
-        # 4. Cabeçalho dos dias da semana (sem alterações)
         header_layout = QGridLayout()
         dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
         for i, dia in enumerate(dias):
             header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
         self.main_layout.addLayout(header_layout)
-        
-        # 5. Grid do calendário (sem alterações)
+
         self.calendar_grid = QGridLayout()
         self.calendar_grid.setSpacing(0)
         self.main_layout.addLayout(self.calendar_grid)
 
-        # 6. Layout de botões de ação (sem alterações)
         action_layout = QHBoxLayout()
         config_btn = QPushButton("Configurações")
         config_btn.clicked.connect(self.abrir_configuracoes)
@@ -1250,7 +1318,7 @@ class CalendarWindow(QMainWindow):
 
 
     def setup_ui(self):
-        # O conteúdo deste método permanece o mesmo
+
         nav_layout = QHBoxLayout()
         prev_btn = QPushButton("< Mês Anterior")
         prev_btn.clicked.connect(self.prev_month)
@@ -1303,49 +1371,49 @@ class CalendarWindow(QMainWindow):
         self.main_layout.addLayout(action_layout)
 
     def verificar_atualizacao(self):
-        """Inicia a thread para verificar atualizações."""
+
         self.update_thread = UpdateCheckerThread()
         self.update_thread.update_found.connect(self.mostrar_dialogo_atualizacao)
         self.update_thread.check_finished.connect(self.finalizar_verificacao)
         
         self.update_thread.start()
-        # --- ALTERADO: Muda o título da janela em vez de usar a status bar ---
+
         self.setWindowTitle(f"{self.original_titulo} (Verificando atualizações...)")
 
     def mostrar_dialogo_atualizacao(self, nova_versao):
-        """Exibe uma pergunta sobre a nova versão e restaura o título."""
         titulo = "Atualização Disponível!"
         mensagem = (f"Uma nova versão ({nova_versao}) do programa está disponível!\n\n"
-                    "Deseja baixar e instalar a atualização agora?")
+                    "Deseja atualizar agora?")
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(titulo)
+        msg_box.setText(mensagem)
+        msg_box.setIcon(QMessageBox.Information)
+
+        sim_btn = msg_box.addButton("Sim, Atualizar Agora", QMessageBox.YesRole)
+        tarde_btn = msg_box.addButton("Atualizar Mais Tarde", QMessageBox.RejectRole)
         
-        resposta = QMessageBox.question(self, titulo, mensagem, 
-                                        QMessageBox.Yes | QMessageBox.No, 
-                                        QMessageBox.No)
+        msg_box.setDefaultButton(tarde_btn)
+        msg_box.exec_()
+
+        if msg_box.clickedButton() == sim_btn:
+            self.baixar_e_instalar_atualizacao(nova_versao)
         
-        # --- ALTERADO: Restaura o título original após o usuário responder ---
         self.setWindowTitle(self.original_titulo)
 
-        if resposta == QMessageBox.Yes:
-            # Esta função já foi criada anteriormente, apenas a mantemos
-            self.baixar_e_instalar_atualizacao(nova_versao)
-
     def finalizar_verificacao(self, update_encontrado):
-        """
-        Chamado quando a verificação termina. Restaura o título
-        APENAS se nenhuma atualização foi encontrada.
-        """
+
         if not update_encontrado:
-            # --- ALTERADO: Restaura o título em vez de limpar a status bar ---
+
             self.setWindowTitle(self.original_titulo)
 
     def baixar_e_instalar_atualizacao(self, nova_versao):
-        """
-        Baixa o instalador da nova versão do GitHub, executa-o e fecha o app atual.
-        """
-        # Adicionamos uma alteração aqui para o título também
+
         self.setWindowTitle(f"{self.original_titulo} (Baixando atualização...)")
         try:
-            nome_arquivo = f"AgendadorSetup-v{nova_versao}.exe" # Adapte o nome se necessário
+
+            nome_arquivo = f"Calendario-v{nova_versao}.exe"
+
             url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
 
             pasta_downloads = str(Path.home() / "Downloads")
@@ -1359,17 +1427,16 @@ class CalendarWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "Erro na Atualização", f"Não foi possível baixar ou executar a atualização.\n\nErro: {e}")
-            # Restaura o título se der erro
             self.setWindowTitle(self.original_titulo)
 
-    # (O resto dos seus métodos continua igual)
+
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
-        # O caminho do ícone aqui é para a bandeja do sistema, não precisa mudar
+
         caminho_icone = os.path.join('imagens', 'icon.ico') 
         icon = QIcon(caminho_icone)
         if icon.isNull():
-             # Fallback icon
+
             self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
         else:
             self.tray_icon.setIcon(icon)

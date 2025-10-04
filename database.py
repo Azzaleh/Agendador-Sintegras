@@ -471,3 +471,32 @@ def get_clientes_com_agendamento_concluido_no_mes(ano, mes):
     ids_clientes = {row['cliente_id'] for row in cursor.fetchall()}
     conn.close()
     return ids_clientes
+
+def get_estatisticas_por_usuario_e_status():
+    """
+    Busca um histórico de contagem de agendamentos, agrupado por
+    mês, responsável e status.
+    """
+    conn = conectar()
+    # Esta query usa GROUP BY para agrupar as contagens da forma que queremos.
+    query = """
+        SELECT
+            strftime('%Y-%m', e.data_vencimento) as mes,
+            e.responsavel,
+            s.nome as nome_status,
+            COUNT(e.id) as contagem
+        FROM
+            entregas as e
+        JOIN
+            status as s ON e.status_id = s.id
+        WHERE
+            e.responsavel IS NOT NULL AND e.responsavel != ''
+        GROUP BY
+            mes, e.responsavel, s.nome
+        ORDER BY
+            mes DESC, e.responsavel, s.nome;
+    """
+    cursor = conn.execute(query)
+    dados = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return dados
