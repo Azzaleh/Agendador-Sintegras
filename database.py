@@ -4,13 +4,13 @@ import hashlib
 from datetime import datetime, timezone, timedelta
 
 def conectar():
-    """Conecta ao banco de dados e habilita o acesso por nome de coluna."""
+
     conn = sqlite3.connect('calendario.db')
     conn.row_factory = sqlite3.Row
     return conn
 
 def iniciar_db():
-    """Cria/atualiza as tabelas do banco de dados."""
+
     conn = conectar()
     cursor = conn.cursor()
     
@@ -91,9 +91,8 @@ def deletar_usuario(id, usuario_logado):
     conn.close()
     
     registrar_log(usuario_logado, 'USUARIO_DELETADO', f'Usuário: {nome_usuario}')
-    return True # Retorna True para indicar sucesso
+    return True
 
-# database.py
 
 def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
     conn = conectar()
@@ -281,13 +280,61 @@ def get_entregas_no_intervalo(data, hora_inicio, hora_fim):
     entregas = conn.execute(query, (data, hora_inicio, hora_fim)).fetchall(); conn.close()
     return [dict(row) for row in entregas]
 
+def _get_ids_status_concluido():
+    """Busca no banco e retorna um conjunto com os IDs dos status de conclusão."""
+    conn = conectar()
+    # A query busca pelos nomes exatos que você especificou
+    query = "SELECT id FROM status WHERE LOWER(nome) = 'feito' OR LOWER(nome) = 'feito e enviado'"
+    cursor = conn.execute(query)
+    # Usamos um 'set' para um acesso e verificação mais rápidos
+    ids = {row['id'] for row in cursor.fetchall()}
+    conn.close()
+    return ids
+
+# --- SUBSTITUA A SUA FUNÇÃO get_estatisticas_mensais ANTIGA POR ESTA ---
 def get_estatisticas_mensais(ano, mes):
-    like_pattern = f"{ano}-{mes:02d}-%"; conn = conectar()
-    query_concluidos = "SELECT COUNT(e.id) as contagem FROM entregas e JOIN status s ON e.status_id = s.id WHERE e.data_vencimento LIKE ? AND (s.nome = 'Feito' OR s.nome = 'Feito e enviado')"
-    cursor_concluidos = conn.execute(query_concluidos, (like_pattern,)); contagem_concluidos = cursor_concluidos.fetchone()['contagem']
-    query_retificados = "SELECT COUNT(e.id) as contagem FROM entregas e JOIN status s ON e.status_id = s.id WHERE e.data_vencimento LIKE ? AND s.nome = 'Retificado'"
-    cursor_retificados = conn.execute(query_retificados, (like_pattern,)); contagem_retificados = cursor_retificados.fetchone()['contagem']
-    conn.close(); return {'concluidos': contagem_concluidos, 'retificados': contagem_retificados}
+    """
+    Calcula as estatísticas de agendamentos para um dado mês e ano.
+    Agora usa a função auxiliar para garantir consistência.
+    """
+    # Pega a lista de IDs de status que são considerados "concluídos"
+    ids_concluidos = _get_ids_status_concluido()
+    
+    # Se não houver status de conclusão cadastrados, retorna 0
+    if not ids_concluidos:
+        return {'concluidos': 0, 'retificados': 0}
+        
+    # Cria a string de placeholders (?,?,?) para a query SQL
+    placeholders = ','.join('?' for _ in ids_concluidos)
+    
+    conn = conectar()
+    
+    # Query para contar os concluídos
+    query_concluidos = f"""
+        SELECT COUNT(id) as total 
+        FROM entregas 
+        WHERE status_id IN ({placeholders}) AND 
+              strftime('%Y', data_vencimento) = ? AND 
+              strftime('%m', data_vencimento) = ?
+    """
+    params_concluidos = list(ids_concluidos) + [str(ano), f"{int(mes):02d}"]
+    cursor_concluidos = conn.execute(query_concluidos, params_concluidos)
+    concluidos = cursor_concluidos.fetchone()['total']
+    
+    # Query para contar os retificados
+    query_retificados = """
+        SELECT COUNT(e.id) as total 
+        FROM entregas as e
+        JOIN status as s ON e.status_id = s.id
+        WHERE LOWER(s.nome) LIKE '%retificado%' AND
+              strftime('%Y', e.data_vencimento) = ? AND 
+              strftime('%m', e.data_vencimento) = ?
+    """
+    cursor_retificados = conn.execute(query_retificados, (str(ano), f"{int(mes):02d}"))
+    retificados = cursor_retificados.fetchone()['total']
+    
+    conn.close()
+    return {'concluidos': concluidos, 'retificados': retificados}
 
 # --- FUNÇÕES ADICIONADAS PARA RELATÓRIOS AVANÇADOS ---
 def get_entregas_filtradas(data_inicio, data_fim, status_ids=None):
@@ -386,3 +433,41 @@ def verificar_senha_usuario_atual(username, password):
         senha_hash_salva = resultado['password_hash']
         return senha_hash_fornecida == senha_hash_salva
     return False
+
+def get_clientes_com_agendamento_no_mes(ano, mes):
+    conn = conectar()
+    query = """
+        SELECT DISTINCT cliente_id 
+        FROM entregas
+        WHERE strftime('%Y', data_vencimento) = ? AND strftime('%m', data_vencimento) = ?
+    """
+    cursor = conn.execute(query, (str(ano), f"{int(mes):02d}"))
+    ids_clientes = {row['cliente_id'] for row in cursor.fetchall()}
+    conn.close()
+    return ids_clientes
+
+def get_total_clientes():
+    conn = conectar()
+    cursor = conn.execute("SELECT COUNT(id) as total FROM clientes")
+    resultado = cursor.fetchone()
+    conn.close()
+    return resultado['total'] if resultado else 0
+
+def get_clientes_com_agendamento_concluido_no_mes(ano, mes):
+    ids_concluidos = _get_ids_status_concluido()
+    if not ids_concluidos:
+        return set()
+    placeholders = ','.join('?' for _ in ids_concluidos)
+    conn = conectar()
+    query = f"""
+        SELECT DISTINCT cliente_id 
+        FROM entregas
+        WHERE status_id IN ({placeholders}) AND
+              strftime('%Y', data_vencimento) = ? AND 
+              strftime('%m', data_vencimento) = ?
+    """
+    params = list(ids_concluidos) + [str(ano), f"{int(mes):02d}"]
+    cursor = conn.execute(query, params)
+    ids_clientes = {row['cliente_id'] for row in cursor.fetchall()}
+    conn.close()
+    return ids_clientes
