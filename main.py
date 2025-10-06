@@ -18,7 +18,7 @@ from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread
 import database
 import export
 
-VERSAO_ATUAL = "1.2"
+VERSAO_ATUAL = "1.3"
 
 class UpdateCheckerThread(QThread):
 
