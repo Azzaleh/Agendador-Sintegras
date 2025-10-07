@@ -607,31 +607,41 @@ class EntregaDialog(QDialog):
 
 class DayViewDialog(QDialog):
     def __init__(self, date, usuario_logado, parent=None):
-        super().__init__(parent); self.date = date; self.usuario_logado = usuario_logado; self.setWindowTitle(f"Agenda para {date.toString('dd/MM/yyyy')}"); self.setMinimumSize(800, 600)
-        self.horarios = self.gerar_horarios_dinamicos()
-        layout = QVBoxLayout(self); self.tabela_agenda = QTableWidget(); self.tabela_agenda.setColumnCount(5); self.tabela_agenda.setHorizontalHeaderLabels(["Horário", "Cliente", "Contato", "Tipo Envio", "Status"]); self.tabela_agenda.setEditTriggers(QTableWidget.NoEditTriggers); self.tabela_agenda.setSelectionBehavior(QTableWidget.SelectRows); self.tabela_agenda.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.tabela_agenda.setColumnWidth(0, 80); layout.addWidget(self.tabela_agenda); botoes_layout = QHBoxLayout(); edit_btn = QPushButton("Editar Agendamento"); del_btn = QPushButton("Excluir Agendamento"); botoes_layout.addStretch(); botoes_layout.addWidget(edit_btn); botoes_layout.addWidget(del_btn); layout.addLayout(botoes_layout); edit_btn.clicked.connect(self.editar_agendamento); del_btn.clicked.connect(self.excluir_agendamento); self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique); self.carregar_agenda_dia()
-    def gerar_horarios_dinamicos(self):
-        settings = QSettings()
-        modo = settings.value("horarios/modo", "automatico")
-        if modo == "manual":
-            lista_manual = settings.value("horarios/lista_manual", "09:00,10:00,11:00")
-            horarios_validos = []
-            for horario_str in lista_manual.split(','):
-                horario_str = horario_str.strip()
-                try:
-                    time_obj = QTime.fromString(horario_str, 'HH:mm')
-                    if time_obj.isValid(): horarios_validos.append(horario_str)
-                except: pass
-            return sorted(horarios_validos)
-        else:
-            hora_inicio = QTime.fromString(settings.value("horarios/hora_inicio", "08:30"), 'HH:mm')
-            hora_fim = QTime.fromString(settings.value("horarios/hora_fim", "17:30"), 'HH:mm')
-            intervalo = settings.value("horarios/intervalo_minutos", 30, type=int)
-            horarios = []; hora_atual = hora_inicio
-            while hora_atual <= hora_fim:
-                horarios.append(hora_atual.toString('HH:mm'))
-                hora_atual = hora_atual.addSecs(intervalo * 60)
-            return horarios
+        super().__init__(parent)
+        self.date = date
+        self.usuario_logado = usuario_logado
+        self.setWindowTitle(f"Agenda para {date.toString('dd/MM/yyyy')}")
+        self.setMinimumSize(800, 600)
+
+        # --- CORREÇÃO AQUI: Chama a função a partir da janela pai (parent) ---
+        self.horarios = self.parent().gerar_horarios_dinamicos(self.date)
+        
+        layout = QVBoxLayout(self)
+        self.tabela_agenda = QTableWidget()
+        self.tabela_agenda.setColumnCount(5)
+        self.tabela_agenda.setHorizontalHeaderLabels(["Horário", "Cliente", "Contato", "Tipo Envio", "Status"])
+        self.tabela_agenda.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabela_agenda.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabela_agenda.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabela_agenda.setColumnWidth(0, 80)
+        layout.addWidget(self.tabela_agenda)
+        
+        botoes_layout = QHBoxLayout()
+        edit_btn = QPushButton("Editar Agendamento")
+        del_btn = QPushButton("Excluir Agendamento")
+        botoes_layout.addStretch()
+        botoes_layout.addWidget(edit_btn)
+        botoes_layout.addWidget(del_btn)
+        layout.addLayout(botoes_layout)
+        
+        edit_btn.clicked.connect(self.editar_agendamento)
+        del_btn.clicked.connect(self.excluir_agendamento)
+        self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique)
+        
+        self.carregar_agenda_dia()
+
+    # O método gerar_horarios_dinamicos foi removido daqui, o que está correto.
+    
     def carregar_agenda_dia(self):
         self.tabela_agenda.setRowCount(0)
         self.tabela_agenda.setRowCount(len(self.horarios))
@@ -644,35 +654,24 @@ class DayViewDialog(QDialog):
 
             if horario in agendamentos_dia:
                 agendamento = agendamentos_dia[horario]
-                
                 self.tabela_agenda.setItem(i, 1, QTableWidgetItem(agendamento['nome_cliente']))
                 self.tabela_agenda.setItem(i, 2, QTableWidgetItem(agendamento['contato']))
                 self.tabela_agenda.setItem(i, 3, QTableWidgetItem(agendamento['tipo_envio']))
-                
                 item_status = QTableWidgetItem(agendamento['nome_status'])
                 item_status.setBackground(QColor(agendamento['cor_hex']))
                 self.tabela_agenda.setItem(i, 4, item_status)
-                
                 item_horario.setData(Qt.UserRole, agendamento)
-
-
                 observacoes = agendamento.get('observacoes', 'Nenhuma observação.')
                 num_computadores = agendamento.get('numero_computadores', 0)
-
-                texto_tooltip = (
-                    f"<b>Nº de Computadores:</b> {num_computadores}<br><hr>"
-                    f"<b>Observações:</b><br>{observacoes}"
-                )
-
+                texto_tooltip = (f"<b>Nº de Computadores:</b> {num_computadores}<br><hr><b>Observações:</b><br>{observacoes}")
                 for col in range(self.tabela_agenda.columnCount()):
                     item = self.tabela_agenda.item(i, col)
                     if item: 
                         item.setToolTip(texto_tooltip)
-
-
             else:
                 for j in range(1, 5):
                     self.tabela_agenda.setItem(i, j, QTableWidgetItem(""))
+
     def gerenciar_agendamento_duplo_clique(self, row, column):
         item_horario = self.tabela_agenda.item(row, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
@@ -684,30 +683,45 @@ class DayViewDialog(QDialog):
             if dialog.exec_() == QDialog.Accepted:
                 data = dialog.get_data()
                 database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['username'])
-        self.carregar_agenda_dia(); self.parent().populate_calendar()
+        self.carregar_agenda_dia()
+        self.parent().populate_calendar()
+
     def editar_agendamento(self):
         itens_selecionados = self.tabela_agenda.selectedItems()
-        if not itens_selecionados: QMessageBox.information(self, "Aviso", "Por favor, selecione um agendamento na tabela para editar."); return
+        if not itens_selecionados:
+            QMessageBox.information(self, "Aviso", "Por favor, selecione um agendamento na tabela para editar.")
+            return
         linha_selecionada = itens_selecionados[0].row()
         item_horario = self.tabela_agenda.item(linha_selecionada, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
-        if not agendamento_existente: QMessageBox.information(self, "Aviso", "Este horário está vago. Dê um clique duplo para criar um novo agendamento."); return
+        if not agendamento_existente:
+            QMessageBox.information(self, "Aviso", "Este horário está vago. Dê um clique duplo para criar um novo agendamento.")
+            return
         dialog = EntregaDialog(self.usuario_logado, self.date, entrega_data=agendamento_existente, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             database.atualizar_entrega(agendamento_existente['id'], agendamento_existente['horario'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['username'])
-            self.carregar_agenda_dia(); self.parent().populate_calendar()
+            self.carregar_agenda_dia()
+            self.parent().populate_calendar()
+
     def excluir_agendamento(self):
         itens_selecionados = self.tabela_agenda.selectedItems()
-        if not itens_selecionados: QMessageBox.information(self, "Aviso", "Por favor, selecione um agendamento na tabela para excluir."); return
+        if not itens_selecionados:
+            QMessageBox.information(self, "Aviso", "Por favor, selecione um agendamento na tabela para excluir.")
+            return
         linha_selecionada = itens_selecionados[0].row()
         item_horario = self.tabela_agenda.item(linha_selecionada, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
-        if not agendamento_existente: QMessageBox.information(self, "Aviso", "Não há agendamento para excluir neste horário."); return
+        if not agendamento_existente:
+            QMessageBox.information(self, "Aviso", "Não há agendamento para excluir neste horário.")
+            return
         reply = QMessageBox.question(self, "Confirmar Exclusão", f"Tem certeza que deseja excluir o agendamento para '{agendamento_existente['nome_cliente']}' às {agendamento_existente['horario']}?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             database.deletar_entrega(agendamento_existente['id'], self.usuario_logado['username'])
-            self.carregar_agenda_dia(); self.parent().populate_calendar()
+            self.carregar_agenda_dia()
+            self.parent().populate_calendar()
+
+
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent); self.setWindowTitle("Configurações"); self.settings = QSettings(); main_layout = QVBoxLayout(self); modo_groupbox = QGroupBox("Modo de Definição de Horários"); modo_layout = QVBoxLayout(); self.radio_auto = QRadioButton("Gerar horários automaticamente"); self.radio_manual = QRadioButton("Inserir horários manualmente"); modo_layout.addWidget(self.radio_auto); modo_layout.addWidget(self.radio_manual); modo_groupbox.setLayout(modo_layout); self.auto_groupbox = QGroupBox("Configuração Automática"); auto_layout = QFormLayout(); self.inicio_edit = QTimeEdit(); self.fim_edit = QTimeEdit(); self.intervalo_spin = QSpinBox(); self.intervalo_spin.setRange(5, 120); self.intervalo_spin.setSuffix(" minutos"); auto_layout.addRow("Hora de Início:", self.inicio_edit); auto_layout.addRow("Hora de Fim:", self.fim_edit); auto_layout.addRow("Intervalo:", self.intervalo_spin); self.auto_groupbox.setLayout(auto_layout); self.manual_groupbox = QGroupBox("Configuração Manual"); manual_layout = QFormLayout(); self.lista_manual_edit = QLineEdit(); self.lista_manual_edit.setPlaceholderText("Ex: 08:00, 09:15, 10:30, 14:00"); manual_layout.addRow("Lista de horários (separados por vírgula):", self.lista_manual_edit); self.manual_groupbox.setLayout(manual_layout); geral_groupbox = QGroupBox("Geral"); geral_layout = QFormLayout(); self.lembrete_spin = QSpinBox(); self.lembrete_spin.setRange(1, 60); self.lembrete_spin.setSuffix(" minutos"); geral_layout.addRow("Avisar com antecedência de:", self.lembrete_spin); geral_groupbox.setLayout(geral_layout); main_layout.addWidget(modo_groupbox); main_layout.addWidget(self.auto_groupbox); main_layout.addWidget(self.manual_groupbox); main_layout.addWidget(geral_groupbox); botoes = QHBoxLayout(); salvar_btn = QPushButton("Salvar"); cancelar_btn = QPushButton("Cancelar"); botoes.addStretch(); botoes.addWidget(salvar_btn); botoes.addWidget(cancelar_btn); main_layout.addLayout(botoes); salvar_btn.clicked.connect(self.salvar); cancelar_btn.clicked.connect(self.reject); self.radio_auto.toggled.connect(self.atualizar_modo_visivel); self.carregar_configs()
@@ -1042,7 +1056,6 @@ class JanelaUsuarios(QDialog):
                 QMessageBox.critical(self, "Falha na Autenticação", "Senha de administrador incorreta. Ação cancelada.")
 
 class CalendarWindow(QMainWindow):
-
     def __init__(self, usuario):
         super().__init__()
         self.usuario_atual = usuario
@@ -1061,73 +1074,99 @@ class CalendarWindow(QMainWindow):
         self.populate_calendar()
         self.verificar_atualizacao()
 
-    
     def _get_cor_porcentagem(self, porcentagem):
-        
-        if porcentagem < 40:
-            return "#d9534f"  # Vermelho
-        elif porcentagem < 80:
-            return "#f0ad4e"  # Laranja
-        else:
-            return "#5cb85c"  # Verde
+        if porcentagem < 40: return "#d9534f"
+        elif porcentagem < 80: return "#f0ad4e"
+        else: return "#5cb85c"
 
     def _get_cor_pendentes(self, pendentes, total):
+        if total == 0: return "#5bc0de"
+        ratio = pendentes / total if total > 0 else 0
+        if ratio > 0.6: return "#d9534f"
+        elif ratio > 0.2: return "#f0ad4e"
+        else: return "#5cb85c"
         
-        if total == 0:
-            return "#5bc0de" # Azul info se não há clientes
-        
-        ratio = pendentes / total
-        if ratio > 0.6:
-            return "#d9534f"  # Vermelho (muitos pendentes)
-        elif ratio > 0.2:
-            return "#f0ad4e"  # Laranja (alguns pendentes)
+    def gerar_horarios_dinamicos(self, para_data):
+        settings = QSettings()
+        modo = settings.value("horarios/modo", "automatico")
+        if modo == "manual":
+            lista_manual = settings.value("horarios/lista_manual", "09:00,10:00,11:00")
+            horarios_validos = []
+            for horario_str in lista_manual.split(','):
+                horario_str = horario_str.strip()
+                try:
+                    time_obj = QTime.fromString(horario_str, 'HH:mm')
+                    if time_obj.isValid(): horarios_validos.append(horario_str)
+                except: pass
+            return sorted(horarios_validos)
         else:
-            return "#5cb85c"  # Verde (poucos ou nenhum pendente)
+            hora_inicio = QTime.fromString(settings.value("horarios/hora_inicio", "08:30"), 'HH:mm')
+            hora_fim = QTime.fromString(settings.value("horarios/hora_fim", "17:30"), 'HH:mm')
+            intervalo = settings.value("horarios/intervalo_minutos", 30, type=int)
+            horarios = []; hora_atual = hora_inicio
+            while hora_atual <= hora_fim:
+                horarios.append(hora_atual.toString('HH:mm'))
+                hora_atual = hora_atual.addSecs(intervalo * 60)
+            return horarios
+    
+    def _atualizar_sugestoes(self):
+        data_busca = QDate.currentDate()
+        for _ in range(30):
+            dia_da_semana = data_busca.dayOfWeek()
+            tipo_feriado = self.feriados.get(data_busca)
+            if dia_da_semana in [6, 7] or tipo_feriado == "nacional":
+                data_busca = data_busca.addDays(1)
+                continue
+            todos_horarios = self.gerar_horarios_dinamicos(data_busca)
+            agendamentos_dia = database.get_entregas_por_dia(data_busca.toString("yyyy-MM-dd"))
+            horarios_ocupados = set(agendamentos_dia.keys())
+            horarios_livres = [h for h in todos_horarios if h not in horarios_ocupados]
+            if horarios_livres:
+                hoje = QDate.currentDate()
+                if data_busca == hoje: texto_dia = "Hoje"
+                elif data_busca == hoje.addDays(1): texto_dia = "Amanhã"
+                else: texto_dia = data_busca.toString("dd/MM")
+                sugestoes_str = ", ".join(horarios_livres[:5])
+                if len(horarios_livres) > 5: sugestoes_str += "..."
+                self.sugestoes_label.setText(f"<b>{texto_dia}:</b><br>{sugestoes_str}")
+                return
+            data_busca = data_busca.addDays(1)
+        self.sugestoes_label.setText("Nenhum horário livre<br>encontrado.")
 
-   
     def populate_calendar(self):
-        # Limpa o grid do calendário (código existente)
         for i in reversed(range(self.calendar_grid.count())):
             self.calendar_grid.itemAt(i).widget().setParent(None)
-        
         year = self.current_date.year
         month = self.current_date.month
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
-
-        #LÓGICA DO DASHBOARD
         stats = database.get_estatisticas_mensais(year, month)
         total_clientes = database.get_total_clientes()
         ids_clientes_atendidos = database.get_clientes_com_agendamento_concluido_no_mes(year, month)
-        
         concluidos_mes = stats.get('concluidos', 0)
         retificados_mes = stats.get('retificados', 0)
         clientes_pendentes = total_clientes - len(ids_clientes_atendidos)
         porcentagem_conclusao = (concluidos_mes / total_clientes) * 100 if total_clientes > 0 else 0
-
         cor_porcentagem = self._get_cor_porcentagem(porcentagem_conclusao)
         cor_pendentes = self._get_cor_pendentes(clientes_pendentes, total_clientes)
         texto_dashboard = f"""
-        <div style="text-align: center;">
-            <table style="margin: auto;">
-                <tr>
-                    <td align="center" style="padding-right: 20px;">
-                        Concluídos no Mês: <b style="color:green;">{concluidos_mes}</b><br/>
-                        <span style="font-size:14px; color:{cor_porcentagem};">
-                            <b>{porcentagem_conclusao:.1f}%</b>
-                        </span>
-                    </td>
-                    <td align="center" style="padding-left: 20px;">
-                        Retificados no Mês: <b style="color:#17a2b8;">{retificados_mes}</b><br/>
-                        <span style="font-size:14px; color:{cor_pendentes};">
-                            <b>{clientes_pendentes} pendentes</b>
-                        </span>
-                    </td>
-                </tr>
-            </table>
-        </div>
+        <table style='margin-left: auto; margin-right: auto;'>
+            <tr>
+                <td align='center' style='padding-right: 20px;'>
+                    Concluídos no Mês: <b style='color:green;'>{concluidos_mes}</b><br/>
+                    <span style='font-size:14px; color:{cor_porcentagem};'>
+                        <b>{porcentagem_conclusao:.1f}%</b>
+                    </span>
+                </td>
+                <td align='center' style='padding-left: 20px;'>
+                    Retificados no Mês: <b style='color:#17a2b8;'>{retificados_mes}</b><br/>
+                    <span style='font-size:14px; color:{cor_pendentes};'>
+                        <b>{clientes_pendentes} pendentes</b>
+                    </span>
+                </td>
+            </tr>
+        </table>
         """
         self.dashboard_label.setText(texto_dashboard)
-
         status_dias = database.get_status_dias_para_mes(year, month)
         month_calendar = calendar.monthcalendar(year, month)
         for week_num, week in enumerate(month_calendar):
@@ -1138,67 +1177,81 @@ class CalendarWindow(QMainWindow):
                     cell = DayCellWidget(date, info_do_dia, day_num, self)
                     cell.clicked.connect(self.open_day_view)
                     self.calendar_grid.addWidget(cell, week_num, day_num)
+        self._atualizar_sugestoes()
 
+# main.py (dentro da classe CalendarWindow)
+
+    # main.py (dentro da classe CalendarWindow)
 
     def setup_ui(self):
-
-        self.month_label = QLabel()
-        self.month_label.setAlignment(Qt.AlignCenter)
-        self.main_layout.addWidget(self.month_label) # Adicionado primeiro
-
-        self.dashboard_label = QLabel()
-        self.dashboard_label.setAlignment(Qt.AlignCenter)
-
+        # --- 1. LINHA DE NAVEGAÇÃO ---
         nav_layout = QHBoxLayout()
         prev_btn = QPushButton("< Mês Anterior")
+        self.month_label = QLabel()
+        self.month_label.setAlignment(Qt.AlignCenter)
         next_btn = QPushButton("Próximo Mês >")
-
         prev_btn.clicked.connect(self.prev_month)
         next_btn.clicked.connect(self.next_month)
-
         nav_layout.addWidget(prev_btn)
-        nav_layout.addStretch() # Espaçador para empurrar o dashboard para o centro
-        nav_layout.addWidget(self.dashboard_label) # Dashboard no meio
-        nav_layout.addStretch() # Espaçador para empurrar o botão "próximo" para a direita
+        nav_layout.addWidget(self.month_label)
         nav_layout.addWidget(next_btn)
-        
-        # Adiciona a linha de navegação/dashboard ao layout principal
         self.main_layout.addLayout(nav_layout)
 
+        # --- 2. LINHA DE INFORMAÇÕES ---
+        info_panel_layout = QHBoxLayout()
+
+        # Painel de Sugestões (Esquerda)
+        sugestoes_group = QGroupBox("Sugestões de Agendamento")
+        sugestoes_layout = QVBoxLayout(sugestoes_group)
+        self.sugestoes_label = QLabel("Buscando horários...")
+        self.sugestoes_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        sugestoes_layout.addWidget(self.sugestoes_label)
+        sugestoes_layout.addStretch(1)
+        sugestoes_group.setFixedWidth(300)
+
+        # Painel de Estatísticas/Dashboard (Centro)
+        self.dashboard_label = QLabel()
+        self.dashboard_label.setAlignment(Qt.AlignCenter)
+        
+        # --- A MUDANÇA ESTÁ AQUI ---
+        # Adiciona um preenchimento na parte de baixo para "empurrar" o texto para cima.
+        # Você pode alterar o valor '15px' para ajustar a altura.
+        self.dashboard_label.setStyleSheet("padding-bottom: 15px;")
+
+        # Widget "Fantasma" (Direita)
+        spacer_widget = QWidget()
+        spacer_widget.setFixedWidth(300)
+
+        # Adiciona os widgets com os alinhamentos que definimos
+        info_panel_layout.addWidget(sugestoes_group, 0, Qt.AlignBottom)
+        info_panel_layout.addStretch(1)
+        info_panel_layout.addWidget(self.dashboard_label, 0, Qt.AlignVCenter)
+        info_panel_layout.addStretch(1)
+        info_panel_layout.addWidget(spacer_widget, 0, Qt.AlignBottom)
+
+        self.main_layout.addLayout(info_panel_layout)
+
+        # --- 3. O RESTO DO LAYOUT CONTINUA IGUAL ---
         header_layout = QGridLayout()
         dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
         for i, dia in enumerate(dias):
             header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
         self.main_layout.addLayout(header_layout)
-
+        
         self.calendar_grid = QGridLayout()
         self.calendar_grid.setSpacing(0)
         self.main_layout.addLayout(self.calendar_grid)
 
         action_layout = QHBoxLayout()
-        config_btn = QPushButton("Configurações")
-        config_btn.clicked.connect(self.abrir_configuracoes)
-        
-        clientes_btn = QPushButton("Gerenciar Clientes")
-        clientes_btn.clicked.connect(self.gerenciar_clientes)
-        
-        status_btn = QPushButton("Gerenciar Status")
-        status_btn.clicked.connect(self.manage_status)
-        
-        usuarios_btn = QPushButton("Gerenciar Usuários")
-        usuarios_btn.clicked.connect(self.gerenciar_usuarios)
-        
-        relatorio_btn = QPushButton("Gerar Relatório")
-        relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
-
-        action_layout.addWidget(config_btn)
-        action_layout.addStretch()
-        action_layout.addWidget(clientes_btn)
-        action_layout.addWidget(status_btn)
-        action_layout.addWidget(usuarios_btn)
-        action_layout.addWidget(relatorio_btn)
-        
+        config_btn = QPushButton("Configurações"); config_btn.clicked.connect(self.abrir_configuracoes)
+        clientes_btn = QPushButton("Gerenciar Clientes"); clientes_btn.clicked.connect(self.gerenciar_clientes)
+        status_btn = QPushButton("Gerenciar Status"); status_btn.clicked.connect(self.manage_status)
+        usuarios_btn = QPushButton("Gerenciar Usuários"); usuarios_btn.clicked.connect(self.gerenciar_usuarios)
+        relatorio_btn = QPushButton("Gerar Relatório"); relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
+        action_layout.addWidget(config_btn); action_layout.addStretch(); action_layout.addWidget(clientes_btn)
+        action_layout.addWidget(status_btn); action_layout.addWidget(usuarios_btn); action_layout.addWidget(relatorio_btn)
         self.main_layout.addLayout(action_layout)
+
 
     def verificar_atualizacao(self):
         self.update_thread = UpdateCheckerThread()
@@ -1209,23 +1262,22 @@ class CalendarWindow(QMainWindow):
 
     def mostrar_dialogo_atualizacao(self, nova_versao):
         titulo = "Atualização Disponível!"
-        mensagem = (f"Uma nova versão ({nova_versao}) do programa está disponível!\n\n"
-                    "Deseja baixar e instalar a atualização agora?")
-        resposta = QMessageBox.question(self, titulo, mensagem, 
-                                        QMessageBox.Yes | QMessageBox.No, 
-                                        QMessageBox.No)
+        mensagem = (f"Uma nova versão ({nova_versao}) do programa está disponível!\n\nDeseja atualizar agora?")
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(titulo); msg_box.setText(mensagem); msg_box.setIcon(QMessageBox.Information)
+        sim_btn = msg_box.addButton("Sim, Atualizar Agora", QMessageBox.YesRole)
+        tarde_btn = msg_box.addButton("Atualizar Mais Tarde", QMessageBox.RejectRole)
+        msg_box.setDefaultButton(tarde_btn); msg_box.exec_()
+        if msg_box.clickedButton() == sim_btn: self.baixar_e_instalar_atualizacao(nova_versao)
         self.setWindowTitle(self.original_titulo)
-        if resposta == QMessageBox.Yes:
-            self.baixar_e_instalar_atualizacao(nova_versao)
 
     def finalizar_verificacao(self, update_encontrado):
-        if not update_encontrado:
-            self.setWindowTitle(self.original_titulo)
+        if not update_encontrado: self.setWindowTitle(self.original_titulo)
 
     def baixar_e_instalar_atualizacao(self, nova_versao):
         self.setWindowTitle(f"{self.original_titulo} (Baixando atualização...)")
         try:
-            nome_arquivo = f"AgendadorSetup-v{nova_versao}.exe" 
+            nome_arquivo = f"Calendario-v{nova_versao}.exe"
             url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
             pasta_downloads = str(Path.home() / "Downloads")
             caminho_salvar = os.path.join(pasta_downloads, nome_arquivo)
@@ -1241,12 +1293,9 @@ class CalendarWindow(QMainWindow):
         self.tray_icon = QSystemTrayIcon(self)
         caminho_icone = os.path.join('imagens', 'icon.ico')
         icon = QIcon(caminho_icone)
-        if icon.isNull():
-            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        else:
-            self.tray_icon.setIcon(icon)
-        self.tray_icon.setToolTip("Agendador de Entregas")
-        self.tray_icon.show()
+        if icon.isNull(): self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        else: self.tray_icon.setIcon(icon)
+        self.tray_icon.setToolTip("Agendador de Entregas"); self.tray_icon.show()
 
     def setup_timer_notificacoes(self):
         settings = QSettings()
@@ -1258,44 +1307,33 @@ class CalendarWindow(QMainWindow):
     def verificar_agendamentos_proximos(self, minutos_antecedencia):
         agora = datetime.now()
         limite = agora + timedelta(minutes=minutos_antecedencia)
-        data_hoje = agora.strftime("%Y-%m-%d")
-        hora_inicio = agora.strftime("%H:%M")
-        hora_fim = limite.strftime("%H:%M")
+        data_hoje = agora.strftime("%Y-%m-%d"); hora_inicio = agora.strftime("%H:%M"); hora_fim = limite.strftime("%H:%M")
         agendamentos = database.get_entregas_no_intervalo(data_hoje, hora_inicio, hora_fim)
         for ag in agendamentos:
             if ag['id'] not in self.notificados_nesta_sessao and ag.get('nome_status', '').lower() == 'pendente':
-                titulo = f"Lembrete de Agendamento ({ag['horario']})"
-                mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
-                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000)
-                self.notificados_nesta_sessao.add(ag['id'])
+                titulo = f"Lembrete de Agendamento ({ag['horario']})"; mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
+                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000); self.notificados_nesta_sessao.add(ag['id'])
 
     def closeEvent(self, event):
-        self.tray_icon.hide()
-        event.accept()
+        self.tray_icon.hide(); event.accept()
 
     def prev_month(self):
-        self.current_date -= timedelta(days=self.current_date.day + 1)
-        self.populate_calendar()
+        self.current_date -= timedelta(days=self.current_date.day + 1); self.populate_calendar()
 
     def next_month(self):
         _, days_in_month = calendar.monthrange(self.current_date.year, self.current_date.month)
-        self.current_date += timedelta(days=days_in_month - self.current_date.day + 1)
-        self.populate_calendar()
+        self.current_date += timedelta(days=days_in_month - self.current_date.day + 1); self.populate_calendar()
 
     def open_day_view(self, date):
         if self.feriados.get(date) == "nacional":
-            QMessageBox.warning(self, "Feriado Nacional", "Não é permitido agendar em um feriado nacional.")
-            return
-        dialog = DayViewDialog(date, self.usuario_atual, self)
-        dialog.exec_()
+            QMessageBox.warning(self, "Feriado Nacional", "Não é permitido agendar em um feriado nacional."); return
+        dialog = DayViewDialog(date, self.usuario_atual, self); dialog.exec_()
 
     def gerenciar_clientes(self):
-        dialog = JanelaClientes(self.usuario_atual, self)
-        dialog.exec_()
+        dialog = JanelaClientes(self.usuario_atual, self); dialog.exec_()
 
     def manage_status(self):
-        dialog = StatusDialog(self.usuario_atual, self)
-        dialog.exec_()
+        dialog = StatusDialog(self.usuario_atual, self); dialog.exec_()
 
     def abrir_configuracoes(self):
         usuario_logado = self.usuario_atual['username']
@@ -1303,219 +1341,14 @@ class CalendarWindow(QMainWindow):
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             if database.verificar_senha_usuario_atual(usuario_logado, senha_digitada):
-                dialog_config = ConfigDialog(self)
-                dialog_config.exec_()
-            else:
-                QMessageBox.warning(self, "Acesso Negado", "Senha incorreta. Tente novamente.")
+                dialog_config = ConfigDialog(self); dialog_config.exec_()
+            else: QMessageBox.warning(self, "Acesso Negado", "Senha incorreta. Tente novamente.")
 
     def abrir_dialogo_relatorio(self):
-        dialog = RelatorioDialog(self.usuario_atual, self)
-        dialog.exec_()
+        dialog = RelatorioDialog(self.usuario_atual, self); dialog.exec_()
 
     def gerenciar_usuarios(self):
-        dialog = JanelaUsuarios(self.usuario_atual, self)
-        dialog.exec_()
-
-
-    def setup_ui(self):
-
-        nav_layout = QHBoxLayout()
-        prev_btn = QPushButton("< Mês Anterior")
-        prev_btn.clicked.connect(self.prev_month)
-        self.month_label = QLabel()
-        self.month_label.setAlignment(Qt.AlignCenter)
-        next_btn = QPushButton("Próximo Mês >")
-        next_btn.clicked.connect(self.next_month)
-        nav_layout.addWidget(prev_btn)
-        nav_layout.addWidget(self.month_label)
-        nav_layout.addWidget(next_btn)
-        self.main_layout.addLayout(nav_layout)
-        
-        self.dashboard_label = QLabel()
-        self.dashboard_label.setAlignment(Qt.AlignCenter)
-        self.main_layout.addWidget(self.dashboard_label)
-
-        header_layout = QGridLayout()
-        dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
-        for i, dia in enumerate(dias):
-            header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
-        self.main_layout.addLayout(header_layout)
-        
-        self.calendar_grid = QGridLayout()
-        self.calendar_grid.setSpacing(0)
-        self.main_layout.addLayout(self.calendar_grid)
-
-        action_layout = QHBoxLayout()
-        config_btn = QPushButton("Configurações")
-        config_btn.clicked.connect(self.abrir_configuracoes)
-        
-        clientes_btn = QPushButton("Gerenciar Clientes")
-        clientes_btn.clicked.connect(self.gerenciar_clientes)
-        
-        status_btn = QPushButton("Gerenciar Status")
-        status_btn.clicked.connect(self.manage_status)
-        
-        usuarios_btn = QPushButton("Gerenciar Usuários")
-        usuarios_btn.clicked.connect(self.gerenciar_usuarios)
-        
-        relatorio_btn = QPushButton("Gerar Relatório")
-        relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
-
-        action_layout.addWidget(config_btn)
-        action_layout.addStretch()
-        action_layout.addWidget(clientes_btn)
-        action_layout.addWidget(status_btn)
-        action_layout.addWidget(usuarios_btn)
-        action_layout.addWidget(relatorio_btn)
-        
-        self.main_layout.addLayout(action_layout)
-
-    def verificar_atualizacao(self):
-
-        self.update_thread = UpdateCheckerThread()
-        self.update_thread.update_found.connect(self.mostrar_dialogo_atualizacao)
-        self.update_thread.check_finished.connect(self.finalizar_verificacao)
-        
-        self.update_thread.start()
-
-        self.setWindowTitle(f"{self.original_titulo} (Verificando atualizações...)")
-
-    def mostrar_dialogo_atualizacao(self, nova_versao):
-        titulo = "Atualização Disponível!"
-        mensagem = (f"Uma nova versão ({nova_versao}) do programa está disponível!\n\n"
-                    "Deseja atualizar agora?")
-
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(titulo)
-        msg_box.setText(mensagem)
-        msg_box.setIcon(QMessageBox.Information)
-
-        sim_btn = msg_box.addButton("Sim, Atualizar Agora", QMessageBox.YesRole)
-        tarde_btn = msg_box.addButton("Atualizar Mais Tarde", QMessageBox.RejectRole)
-        
-        msg_box.setDefaultButton(tarde_btn)
-        msg_box.exec_()
-
-        if msg_box.clickedButton() == sim_btn:
-            self.baixar_e_instalar_atualizacao(nova_versao)
-        
-        self.setWindowTitle(self.original_titulo)
-
-    def finalizar_verificacao(self, update_encontrado):
-
-        if not update_encontrado:
-
-            self.setWindowTitle(self.original_titulo)
-
-    def baixar_e_instalar_atualizacao(self, nova_versao):
-
-        self.setWindowTitle(f"{self.original_titulo} (Baixando atualização...)")
-        try:
-
-            nome_arquivo = f"Calendario-v{nova_versao}.exe"
-
-            url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
-
-            pasta_downloads = str(Path.home() / "Downloads")
-            caminho_salvar = os.path.join(pasta_downloads, nome_arquivo)
-
-            from urllib.request import urlretrieve
-            urlretrieve(url_download, caminho_salvar)
-
-            subprocess.Popen([caminho_salvar])
-            QApplication.instance().quit()
-
-        except Exception as e:
-            QMessageBox.critical(self, "Erro na Atualização", f"Não foi possível baixar ou executar a atualização.\n\nErro: {e}")
-            self.setWindowTitle(self.original_titulo)
-
-
-    def setup_tray_icon(self):
-        self.tray_icon = QSystemTrayIcon(self)
-
-        caminho_icone = os.path.join('imagens', 'icon.ico') 
-        icon = QIcon(caminho_icone)
-        if icon.isNull():
-
-            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
-        else:
-            self.tray_icon.setIcon(icon)
-        
-        self.tray_icon.setToolTip("Agendador de Entregas")
-        self.tray_icon.show()
-
-    def setup_timer_notificacoes(self):
-        settings = QSettings()
-        minutos_lembrete = settings.value("geral/minutos_lembrete", 15, type=int)
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(lambda: self.verificar_agendamentos_proximos(minutos_lembrete))
-        self.timer.start(60000)
-
-    def verificar_agendamentos_proximos(self, minutos_antecedencia):
-        agora = datetime.now()
-        limite = agora + timedelta(minutes=minutos_antecedencia)
-        data_hoje = agora.strftime("%Y-%m-%d")
-        hora_inicio = agora.strftime("%H:%M")
-        hora_fim = limite.strftime("%H:%M")
-        
-        agendamentos = database.get_entregas_no_intervalo(data_hoje, hora_inicio, hora_fim)
-        
-        for ag in agendamentos:
-            if ag['id'] not in self.notificados_nesta_sessao and ag.get('nome_status', '').lower() == 'pendente':
-                titulo = f"Lembrete de Agendamento ({ag['horario']})"
-                mensagem = f"Cliente: {ag['nome_cliente']}\nStatus: {ag.get('nome_status', 'N/A')}"
-                self.tray_icon.showMessage(titulo, mensagem, QSystemTrayIcon.Information, 15000)
-                self.notificados_nesta_sessao.add(ag['id'])
-
-    def closeEvent(self, event):
-        self.tray_icon.hide()
-        event.accept()
-
-
-    def prev_month(self):
-        self.current_date -= timedelta(days=self.current_date.day + 1)
-        self.populate_calendar()
-
-    def next_month(self):
-        _, days_in_month = calendar.monthrange(self.current_date.year, self.current_date.month)
-        self.current_date += timedelta(days=days_in_month - self.current_date.day + 1)
-        self.populate_calendar()
-
-    def open_day_view(self, date):
-        if self.feriados.get(date) == "nacional":
-            QMessageBox.warning(self, "Feriado Nacional", "Não é permitido agendar em um feriado nacional.")
-            return
-        dialog = DayViewDialog(date, self.usuario_atual, self)
-        dialog.exec_()
-
-    def gerenciar_clientes(self):
-        dialog = JanelaClientes(self.usuario_atual, self)
-        dialog.exec_()
-
-    def manage_status(self):
-        dialog = StatusDialog(self.usuario_atual, self)
-        dialog.exec_()
-
-    def abrir_configuracoes(self):
-
-        usuario_logado = self.usuario_atual['username']
-        dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
-        
-        if dialogo_confirmacao.exec_() == QDialog.Accepted:
-            senha_digitada = dialogo_confirmacao.get_senha()
-            if database.verificar_senha_usuario_atual(usuario_logado, senha_digitada):
-                dialog_config = ConfigDialog(self)
-                dialog_config.exec_()
-            else:
-                QMessageBox.warning(self, "Acesso Negado", "Senha incorreta. Tente novamente.")
-
-    def abrir_dialogo_relatorio(self):
-        dialog = RelatorioDialog(self.usuario_atual, self)
-        dialog.exec_()
-
-    def gerenciar_usuarios(self):
-        dialog = JanelaUsuarios(self.usuario_atual, self)
-        dialog.exec_()
+        dialog = JanelaUsuarios(self.usuario_atual, self); dialog.exec_()
 
 if __name__ == '__main__':
     QApplication.setOrganizationName("SuaOrganizacao"); QApplication.setApplicationName("Agendador"); database.iniciar_db()
