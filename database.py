@@ -1,502 +1,576 @@
-# database.py
-import sqlite3
+# database.py — Versão FINAL completa com conexão dinâmica
+import fdb
 import hashlib
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime
+from PyQt5.QtCore import QSettings # Importa a classe para ler as configurações
+
+#==============================================================================
+# FUNÇÕES DE CONEXÃO E INICIALIZAÇÃO
+#==============================================================================
 
 def conectar():
+    """
+    Conecta ao banco de dados Firebird lendo as configurações salvas pelo usuário
+    (local ou remoto). Inclui tratamento de erro aprimorado.
+    """
+    settings = QSettings()
+    
+    # --- Carrega as configurações salvas ---
+    modo = settings.value("database/modo", "local")
+    user = settings.value("database/usuario", "SYSDBA")
+    password = settings.value("database/senha", "masterkey")
+    
+    host = ""
+    port = 0
+    database_path = ""
 
-    conn = sqlite3.connect('calendario.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+    if modo == "local":
+        host = "localhost"
+        port = 3050 # Porta padrão para Firebird local
+        # Define um caminho padrão se nenhum estiver salvo ainda
+        default_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Agendador', 'CALENDARIO.FDB')
+        database_path = settings.value("database/caminho_local", default_path)
+
+        # Cria o diretório e o banco de dados se não existirem (apenas no modo local)
+        db_dir = os.path.dirname(database_path)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir)
+        
+        if not os.path.exists(database_path):
+            print(f"🆕 Criando banco de dados local em: {database_path}")
+            fdb.create_database(dsn=f"{host}/{port}:{database_path}", user=user, password=password)
+
+    else: # modo == "remoto"
+        host = settings.value("database/host_remoto", "localhost")
+        port = settings.value("database/porta_remota", 3050, type=int)
+        database_path = settings.value("database/caminho_remoto", "")
+        if not host or not database_path:
+            # Esta exceção pode ser tratada na UI para avisar o usuário
+            raise ConnectionError("Configuração remota incompleta: Host ou Caminho do banco não definido.")
+
+    # --- Tenta conectar com as configurações carregadas ---
+    print(f"Conectando ao banco ({modo}): {host}:{port}/{database_path}")
+    try:
+        return fdb.connect(
+            host=host,
+            port=port,
+            database=database_path,
+            user=user,
+            password=password,
+            charset='UTF8'
+        )
+    except fdb.Error as e:
+        print(f"❌ Erro crítico ao conectar ao banco de dados: {e}")
+        # Lança a exceção para que a aplicação principal possa tratar o erro
+        raise
+
+def tabela_existe(cur, nome_tabela):
+    cur.execute("SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = ?", (nome_tabela.upper(),))
+    return cur.fetchone() is not None
+
+def criar_generator_e_trigger(cur, tabela):
+    gen_name = f"GEN_{tabela}_ID"
+    trg_name = f"TRG_{tabela}_BI"
+    cur.execute(f"SELECT RDB$GENERATOR_NAME FROM RDB$GENERATORS WHERE RDB$GENERATOR_NAME = '{gen_name}'")
+    if cur.fetchone() is None:
+        cur.execute(f'CREATE GENERATOR {gen_name}')
+    
+    cur.execute(f"SELECT RDB$TRIGGER_NAME FROM RDB$TRIGGERS WHERE RDB$TRIGGER_NAME = '{trg_name}'")
+    if cur.fetchone() is None:
+        cur.execute(f"""
+        CREATE TRIGGER {trg_name} FOR {tabela}
+        ACTIVE BEFORE INSERT POSITION 0
+        AS
+        BEGIN
+            IF (NEW.ID IS NULL) THEN NEW.ID = GEN_ID({gen_name}, 1);
+        END
+        """)
 
 def iniciar_db():
-
     conn = conectar()
-    cursor = conn.cursor()
+    cur = conn.cursor()
     
-    cursor.execute('CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS status (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL UNIQUE, cor_hex TEXT NOT NULL)')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS clientes (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, tipo_envio TEXT NOT NULL, contato TEXT NOT NULL, gera_recibo BOOLEAN NOT NULL DEFAULT 0, conta_xmls BOOLEAN NOT NULL DEFAULT 0, nivel TEXT, outros_detalhes TEXT, numero_computadores INTEGER DEFAULT 0)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS entregas (id INTEGER PRIMARY KEY AUTOINCREMENT, data_vencimento TEXT NOT NULL, horario TEXT NOT NULL, status_id INTEGER, cliente_id INTEGER NOT NULL, responsavel TEXT, observacoes TEXT, FOREIGN KEY (status_id) REFERENCES status (id) ON DELETE SET NULL, FOREIGN KEY (cliente_id) REFERENCES clientes (id) ON DELETE CASCADE)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, usuario_nome TEXT NOT NULL, acao TEXT NOT NULL, detalhes TEXT)''')
-    
-    cursor.execute("SELECT COUNT(id) FROM usuarios")
-    if cursor.fetchone()[0] == 0:
+    # --- Tabelas ---
+    if not tabela_existe(cur, 'USUARIOS'):
+        cur.execute("CREATE TABLE USUARIOS (ID INTEGER NOT NULL PRIMARY KEY, USERNAME VARCHAR(50) UNIQUE NOT NULL, PASSWORD_HASH VARCHAR(64) NOT NULL)")
+        criar_generator_e_trigger(cur, 'USUARIOS')
+    if not tabela_existe(cur, 'STATUS'):
+        cur.execute("CREATE TABLE STATUS (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(50) UNIQUE NOT NULL, COR_HEX VARCHAR(10) NOT NULL)")
+        criar_generator_e_trigger(cur, 'STATUS')
+    if not tabela_existe(cur, 'CLIENTES'):
+        cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(20) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
+        criar_generator_e_trigger(cur, 'CLIENTES')
+    if not tabela_existe(cur, 'ENTREGAS'):
+        cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(50), OBSERVACOES BLOB SUB_TYPE TEXT, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
+        criar_generator_e_trigger(cur, 'ENTREGAS')
+    if not tabela_existe(cur, 'LOGS'):
+        cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
+        criar_generator_e_trigger(cur, 'LOGS')
+    conn.commit()
+
+    # --- Dados Padrão ---
+    cur.execute("SELECT COUNT(*) FROM USUARIOS")
+    if cur.fetchone()[0] == 0:
         senha_hash = hashlib.sha256('admin'.encode('utf-8')).hexdigest()
-        cursor.execute("INSERT INTO usuarios (username, password_hash) VALUES (?, ?)", ('admin', senha_hash))
-
-    cursor.execute("SELECT COUNT(id) FROM status")
-    if cursor.fetchone()[0] == 0:
-        status_padrao = [
-            ('PENDENTE', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), 
-            ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), 
-            ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')
-        ]
-        cursor.executemany("INSERT INTO status (nome, cor_hex) VALUES (?, ?)", status_padrao)
-
+        cur.execute("INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH) VALUES (?, ?)", ('admin', senha_hash))
+    cur.execute("SELECT COUNT(*) FROM STATUS")
+    if cur.fetchone()[0] == 0:
+        status_padrao = [('PENDENTE', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')]
+        cur.executemany("INSERT INTO STATUS (NOME, COR_HEX) VALUES (?, ?)", status_padrao)
     conn.commit()
     conn.close()
+    print("✅ Banco Firebird 2.5 inicializado com sucesso!")
 
-def registrar_log(usuario_nome, acao, detalhes=""):
-    conn = conectar()
-    conn.execute("INSERT INTO logs (usuario_nome, acao, detalhes) VALUES (?, ?, ?)", (usuario_nome, acao, detalhes))
-    conn.commit()
-    conn.close()
-
-def criar_usuario(username, password):
-    conn = conectar()
-    senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+#==============================================================================
+# FUNÇÃO AUXILIAR
+#==============================================================================
+def dict_factory(cursor, row):
+    """
+    Converte uma tupla de resultado do Firebird em um dicionário.
+    Ajustado para maior robustez.
+    """
+    if not row:
+        return None
+    
+    d = {}
     try:
-        conn.execute("INSERT INTO usuarios (username, password_hash) VALUES (?, ?)", (username, senha_hash))
-        conn.commit()
-        registrar_log('sistema', 'USUARIO_CRIADO', f'Usuário: {username}')
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
+        for idx, col in enumerate(cursor.description):
+            # Acessa o nome da coluna de forma segura
+            col_name = col[0]
+            if isinstance(col_name, bytes):
+                col_name = col_name.decode('utf-8', errors='ignore')
+            
+            d[col_name.upper()] = row[idx]
+    except Exception as e:
+        print(f"Erro ao processar linha do banco de dados na dict_factory: {e}")
+        return None # Retorna None se houver erro na conversão da linha
 
+    return d
+
+#==============================================================================
+# LOGS
+#==============================================================================
+def registrar_log(usuario_nome, acao, detalhes):
+    sql = "INSERT INTO LOGS (USUARIO_NOME, ACAO, DETALHES) VALUES (?, ?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (usuario_nome, acao, detalhes))
+        conn.commit()
+    except fdb.Error as e:
+        print(f"Erro ao registrar log: {e}")
+    finally:
+        if conn: conn.close()
+
+#==============================================================================
+# USUÁRIOS
+#==============================================================================
 def verificar_usuario(username, password):
-    conn = conectar()
     senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    cursor = conn.execute("SELECT * FROM usuarios WHERE username = ? AND password_hash = ?", (username, senha_hash))
-    usuario = cursor.fetchone()
-    conn.close()
-    if usuario:
-        return dict(usuario)
-    return None
+    sql = "SELECT ID, USERNAME FROM USUARIOS WHERE USERNAME = ? AND PASSWORD_HASH = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (username.strip(), senha_hash))
+        return dict_factory(cur, cur.fetchone())
+    finally:
+        if conn: conn.close()
 
 def listar_usuarios():
-    conn = conectar()
-    usuarios = conn.execute("SELECT username FROM usuarios ORDER BY username").fetchall()
-    conn.close()
-    return [row['username'] for row in usuarios]
-
-def deletar_usuario(id, usuario_logado):
-    """ Deleta um usuário do sistema, com proteção para o ID 1. """
-    # --- NOVA CAMADA DE SEGURANÇA ---
-    # Impede que o usuário com ID 1 (admin principal) seja deletado.
-    if id == 1:
-        registrar_log(usuario_logado, 'EXCLUSAO_NEGADA', f'Tentativa de excluir usuário admin principal (ID: {id})')
-        return False # Retorna False para indicar que a operação falhou
-
-    conn = conectar()
-    # Pega o nome para o log antes de deletar
-    cursor = conn.execute("SELECT username FROM usuarios WHERE id = ?", (id,))
-    usuario = cursor.fetchone()
-    nome_usuario = usuario['username'] if usuario else f"ID {id}"
-    
-    conn.execute("DELETE FROM usuarios WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
-    
-    registrar_log(usuario_logado, 'USUARIO_DELETADO', f'Usuário: {nome_usuario}')
-    return True
-
-
-def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
-    conn = conectar()
-    conn.execute(
-        "INSERT INTO clientes (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, outros_detalhes, numero_computadores) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores)
-    )
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "CLIENTE_CRIADO", f"Cliente: {nome}")
-
-def atualizar_cliente(id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
-    conn = conectar()
-    conn.execute(
-        "UPDATE clientes SET nome=?, tipo_envio=?, contato=?, gera_recibo=?, conta_xmls=?, nivel=?, outros_detalhes=?, numero_computadores=? WHERE id=?",
-        (nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, id)
-    )
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "CLIENTE_ATUALIZADO", f"Cliente ID: {id}, Nome: {nome}")
-
-def listar_clientes():
-    conn = conectar()
-    clientes = conn.execute("SELECT * FROM clientes ORDER BY nome").fetchall()
-    conn.close()
-    return clientes
-
-def deletar_cliente(id, usuario_logado):
-    conn = conectar()
-    cursor = conn.execute("SELECT nome FROM clientes WHERE id = ?", (id,))
-    cliente = cursor.fetchone()
-    nome_cliente = cliente['nome'] if cliente else f"ID {id}"
-    conn.execute("DELETE FROM clientes WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "CLIENTE_DELETADO", f"Cliente: {nome_cliente}")
-
-def listar_status():
-    conn = conectar()
-    status_list = conn.execute("SELECT * FROM status ORDER BY nome").fetchall()
-    conn.close()
-    return status_list
-
-def adicionar_status(nome, cor_hex, usuario_logado):
-    conn = conectar()
-    conn.execute("INSERT INTO status (nome, cor_hex) VALUES (?, ?)", (nome, cor_hex))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "STATUS_CRIADO", f"Status: {nome}")
-
-def atualizar_status(id, nome, cor_hex, usuario_logado):
-    conn = conectar()
-    conn.execute("UPDATE status SET nome=?, cor_hex=? WHERE id=?", (nome, cor_hex, id))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "STATUS_ATUALIZADO", f"Status ID: {id}, Nome: {nome}")
-
-def deletar_status(id, usuario_logado):
-    conn = conectar()
-    cursor = conn.execute("SELECT nome FROM status WHERE id = ?", (id,))
-    status = cursor.fetchone()
-    nome_status = status['nome'] if status else f"ID {id}"
-    conn.execute("DELETE FROM status WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "STATUS_DELETADO", f"Status: {nome_status}")
-
-def adicionar_entrega(data_vencimento, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
-    conn = conectar()
-    conn.execute("INSERT INTO entregas (data_vencimento, horario, status_id, cliente_id, responsavel, observacoes) VALUES (?, ?, ?, ?, ?, ?)", (data_vencimento, horario, status_id, cliente_id, responsavel, observacoes))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "AGENDAMENTO_CRIADO", f"Data: {data_vencimento}, Hora: {horario}, Cliente ID: {cliente_id}")
-
-# database.py
-
-def atualizar_entrega(id, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
-    conn = conectar()
-    # Usaremos um cursor para poder buscar dados
-    cursor = conn.cursor()
-
-    # 1. ANTES de atualizar, buscamos os dados antigos no banco
-    #    Usamos JOINs para já pegar os nomes do cliente e do status
-    cursor.execute("""
-        SELECT e.horario, e.status_id, e.cliente_id, e.responsavel, e.observacoes,
-               c.nome as nome_cliente, s.nome as nome_status
-        FROM entregas e
-        LEFT JOIN clientes c ON e.cliente_id = c.id
-        LEFT JOIN status s ON e.status_id = s.id
-        WHERE e.id = ?
-    """, (id,))
-    dados_antigos = cursor.fetchone()
-
-    # Se por algum motivo o agendamento não for encontrado, encerramos aqui
-    if not dados_antigos:
-        conn.close()
-        return
-
-    # 2. Agora, realizamos o UPDATE no banco de dados com os novos dados
-    cursor.execute("UPDATE entregas SET horario=?, status_id=?, cliente_id=?, responsavel=?, observacoes=? WHERE id=?",
-                   (horario, status_id, cliente_id, responsavel, observacoes, id))
-
-    # 3. Comparamos os dados antigos com os novos para montar os detalhes do log
-    detalhes_log = []
-
-    # Compara o Status (a sua solicitação principal)
-    if dados_antigos['status_id'] != status_id:
-        nome_status_antigo = dados_antigos['nome_status'] if dados_antigos['nome_status'] else "Nenhum"
-        # Busca o nome do novo status
-        cursor.execute("SELECT nome FROM status WHERE id = ?", (status_id,))
-        res_status = cursor.fetchone()
-        nome_status_novo = res_status['nome'] if res_status else "Nenhum"
-        detalhes_log.append(f"Status: de '{nome_status_antigo}' para '{nome_status_novo}'")
-
-    # BÔNUS: Vamos fazer o mesmo para outros campos importantes
-    if dados_antigos['cliente_id'] != cliente_id:
-        nome_cliente_antigo = dados_antigos['nome_cliente']
-        cursor.execute("SELECT nome FROM clientes WHERE id = ?", (cliente_id,))
-        res_cliente = cursor.fetchone()
-        nome_cliente_novo = res_cliente['nome'] if res_cliente else "N/A"
-        detalhes_log.append(f"Cliente: de '{nome_cliente_antigo}' para '{nome_cliente_novo}'")
-
-    if dados_antigos['horario'] != horario:
-        detalhes_log.append(f"Horário: de '{dados_antigos['horario']}' para '{horario}'")
-
-    if dados_antigos['responsavel'] != responsavel:
-        detalhes_log.append(f"Responsável: de '{dados_antigos['responsavel']}' para '{responsavel}'")
-
-    if dados_antigos['observacoes'] != observacoes:
-        detalhes_log.append("Observações foram alteradas.")
-
-    # 4. Monta a string final para o log
-    if not detalhes_log:
-        detalhes_finais = f"Agendamento ID {id} salvo sem alterações."
-    else:
-        # Junta todas as alterações encontradas, separadas por "; "
-        detalhes_finais = f"Agendamento ID {id}: " + "; ".join(detalhes_log)
-
-    # 5. Salva as alterações no banco e fecha a conexão
-    conn.commit()
-    conn.close()
-    
-    # 6. Registra o log com a nossa nova mensagem detalhada
-    registrar_log(usuario_logado, "AGENDAMENTO_ATUALIZADO", detalhes_finais)
-
-def deletar_entrega(id, usuario_logado):
-    conn = conectar()
-    conn.execute("DELETE FROM entregas WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "AGENDAMENTO_DELETADO", f"Agendamento ID: {id}")
-
-def get_entregas_por_dia(data):
-    conn = conectar()
-    query = "SELECT e.id, e.data_vencimento, e.horario, e.responsavel, e.observacoes, e.cliente_id, e.status_id, c.nome as nome_cliente, c.tipo_envio, c.contato, c.numero_computadores, s.nome as nome_status, s.cor_hex FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento = ? "
-    entregas_dia = conn.execute(query, (data,)).fetchall()
-    conn.close()
-    return {entrega['horario']: dict(entrega) for entrega in entregas_dia}
-
-def get_status_dias_para_mes(ano, mes):
-    data_inicio = f"{ano}-{mes:02d}-01"; data_fim = f"{ano}-{mes:02d}-31"; conn = conectar()
-    query = "SELECT e.data_vencimento, s.nome as nome_status, s.cor_hex FROM entregas e LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento BETWEEN ? AND ?"
-    entregas_mes = conn.execute(query, (data_inicio, data_fim)).fetchall(); conn.close()
-    ordem_prioridade = ['Houve Algum Erro', 'Chamado', 'Remarcado', 'PENDENTE', 'Realocado', 'Retificado', 'Feito', 'Feito e enviado']
-    status_por_dia = {}
-    for entrega in entregas_mes:
-        dia = int(entrega['data_vencimento'].split('-')[2])
-        if dia not in status_por_dia: status_por_dia[dia] = []
-        status_por_dia[dia].append(entrega['nome_status'])
-    resultado_final = {}
-    for dia, status_lista in status_por_dia.items():
-        cor_final = '#28a745'; status_final = 'Feito e enviado'
-        todos_concluidos = all(s in ['Feito', 'Feito e enviado'] for s in status_lista)
-        if todos_concluidos: cor_final = '#28a745'
-        else:
-            for status_prioritario in ordem_prioridade:
-                if status_prioritario in status_lista: status_final = status_prioritario; break
-            for entrega in entregas_mes:
-                if entrega['nome_status'] == status_final: cor_final = entrega['cor_hex']; break
-        resultado_final[dia] = {'cor': cor_final, 'contagem': len(status_lista)}
-    return resultado_final
-
-def get_entregas_no_intervalo(data, hora_inicio, hora_fim):
-    conn = conectar(); query = "SELECT e.id, e.horario, c.nome as nome_cliente, s.nome as nome_status FROM entregas e JOIN clientes c ON e.cliente_id = c.id LEFT JOIN status s ON e.status_id = s.id WHERE e.data_vencimento = ? AND e.horario BETWEEN ? AND ?"
-    entregas = conn.execute(query, (data, hora_inicio, hora_fim)).fetchall(); conn.close()
-    return [dict(row) for row in entregas]
-
-def _get_ids_status_concluido():
-    """Busca no banco e retorna um conjunto com os IDs dos status de conclusão."""
-    conn = conectar()
-    # A query busca pelos nomes exatos que você especificou
-    query = "SELECT id FROM status WHERE LOWER(nome) = 'feito' OR LOWER(nome) = 'feito e enviado'"
-    cursor = conn.execute(query)
-    # Usamos um 'set' para um acesso e verificação mais rápidos
-    ids = {row['id'] for row in cursor.fetchall()}
-    conn.close()
-    return ids
-
-# --- SUBSTITUA A SUA FUNÇÃO get_estatisticas_mensais ANTIGA POR ESTA ---
-def get_estatisticas_mensais(ano, mes):
-    """
-    Calcula as estatísticas de agendamentos para um dado mês e ano.
-    Agora usa a função auxiliar para garantir consistência.
-    """
-    # Pega a lista de IDs de status que são considerados "concluídos"
-    ids_concluidos = _get_ids_status_concluido()
-    
-    # Se não houver status de conclusão cadastrados, retorna 0
-    if not ids_concluidos:
-        return {'concluidos': 0, 'retificados': 0}
+    sql = "SELECT USERNAME FROM USUARIOS ORDER BY USERNAME"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
         
-    # Cria a string de placeholders (?,?,?) para a query SQL
-    placeholders = ','.join('?' for _ in ids_concluidos)
-    
-    conn = conectar()
-    
-    # Query para contar os concluídos
-    query_concluidos = f"""
-        SELECT COUNT(id) as total 
-        FROM entregas 
-        WHERE status_id IN ({placeholders}) AND 
-              strftime('%Y', data_vencimento) = ? AND 
-              strftime('%m', data_vencimento) = ?
-    """
-    params_concluidos = list(ids_concluidos) + [str(ano), f"{int(mes):02d}"]
-    cursor_concluidos = conn.execute(query_concluidos, params_concluidos)
-    concluidos = cursor_concluidos.fetchone()['total']
-    
-    # Query para contar os retificados
-    query_retificados = """
-        SELECT COUNT(e.id) as total 
-        FROM entregas as e
-        JOIN status as s ON e.status_id = s.id
-        WHERE LOWER(s.nome) LIKE '%retificado%' AND
-              strftime('%Y', e.data_vencimento) = ? AND 
-              strftime('%m', e.data_vencimento) = ?
-    """
-    cursor_retificados = conn.execute(query_retificados, (str(ano), f"{int(mes):02d}"))
-    retificados = cursor_retificados.fetchone()['total']
-    
-    conn.close()
-    return {'concluidos': concluidos, 'retificados': retificados}
-
-# --- FUNÇÕES ADICIONADAS PARA RELATÓRIOS AVANÇADOS ---
-def get_entregas_filtradas(data_inicio, data_fim, status_ids=None):
-    """ Busca entregas com base em um período e uma lista de status. """
-    conn = conectar()
-    params = [data_inicio, data_fim]
-    
-    query = """
-        SELECT e.data_vencimento, e.horario, e.responsavel, e.observacoes,
-               c.nome as nome_cliente, c.tipo_envio, c.contato,
-               s.nome as nome_status
-        FROM entregas e
-        JOIN clientes c ON e.cliente_id = c.id
-        LEFT JOIN status s ON e.status_id = s.id
-        WHERE e.data_vencimento BETWEEN ? AND ?
-    """
-    
-    if status_ids:
-        placeholders = ','.join('?' for _ in status_ids)
-        query += f" AND e.status_id IN ({placeholders})"
-        params.extend(status_ids)
-        
-    query += " ORDER BY e.data_vencimento, e.horario"
-    
-    entregas = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(row) for row in entregas]
-
-def get_logs_filtrados(data_inicio, data_fim, usuario_nome=None):
-    """ Busca logs com base em um período e, opcionalmente, um usuário. """
-    conn = conectar()
-    params = [f"{data_inicio} 00:00:00", f"{data_fim} 23:59:59"]
-    
-    query = """
-        SELECT timestamp, usuario_nome, acao, detalhes
-        FROM logs
-        WHERE timestamp BETWEEN ? AND ?
-    """
-    
-    if usuario_nome and usuario_nome != "Todos":
-        query += " AND usuario_nome = ?"
-        params.append(usuario_nome)
-        
-    query += " ORDER BY timestamp DESC"
-    
-    logs_raw = conn.execute(query, params).fetchall()
-    conn.close()
-    
-    # --- NOVA LÓGICA DE CONVERSÃO DE FUSO HORÁRIO ---
-    logs_convertidos = []
-    fuso_local = timezone(timedelta(hours=-3)) # Define o fuso como UTC-3 (Horário de Brasília)
-
-    for log in logs_raw:
-        log_dict = dict(log)
-        
-        # 1. Converte a string de data/hora do banco para um objeto datetime
-        timestamp_utc_str = log_dict['timestamp']
-        # O SQLite pode ter formatos diferentes, então tentamos os mais comuns
-        try:
-            timestamp_utc = datetime.strptime(timestamp_utc_str, '%Y-%m-%d %H:%M:%S')
-        except ValueError:
-            # Tenta com milissegundos, caso o formato do banco inclua
-            timestamp_utc = datetime.strptime(timestamp_utc_str, '%Y-%m-%d %H:%M:%S.%f')
-
-        # 2. Informa ao Python que este objeto está em UTC
-        timestamp_utc = timestamp_utc.replace(tzinfo=timezone.utc)
-        
-        # 3. Converte o objeto para o nosso fuso horário local
-        timestamp_local = timestamp_utc.astimezone(fuso_local)
-        
-        # 4. Formata de volta para uma string legível e atualiza o dicionário
-        log_dict['timestamp'] = timestamp_local.strftime('%Y-%m-%d %H:%M:%S')
-        
-        logs_convertidos.append(log_dict)
-        
-    return logs_convertidos
-
-def atualizar_usuario(id, username, password, usuario_logado):
-    conn = conectar()
-    senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    conn.execute("UPDATE usuarios SET username=?, password_hash=? WHERE id=?", (username, senha_hash, id))
-    conn.commit()
-    conn.close()
-    registrar_log(usuario_logado, "USUARIO_ATUALIZADO", f"Usuário ID: {id}, Nome: {username}")
+def get_usuario_por_nome(username):
+    sql = "SELECT ID, USERNAME FROM USUARIOS WHERE USERNAME = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (username,))
+        return dict_factory(cur, cur.fetchone())
+    finally:
+        if conn: conn.close()
 
 def verificar_senha_usuario_atual(username, password):
-    """Verifica se a senha fornecida corresponde à do usuário informado."""
-    conn = conectar()
-    senha_hash_fornecida = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    
-    cursor = conn.execute("SELECT password_hash FROM usuarios WHERE username = ?", (username,))
-    resultado = cursor.fetchone()
-    conn.close()
-    
-    if resultado:
-        senha_hash_salva = resultado['password_hash']
-        return senha_hash_fornecida == senha_hash_salva
-    return False
+    usuario = verificar_usuario(username, password)
+    return usuario is not None
+
+def criar_usuario(username, password, usuario_logado):
+    if get_usuario_por_nome(username): return False
+    senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    sql = "INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH) VALUES (?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (username, senha_hash))
+        conn.commit()
+        registrar_log(usuario_logado, "CRIAR_USUARIO", f"Usuário '{username}' criado.")
+        return True
+    finally:
+        if conn: conn.close()
+
+def atualizar_usuario(user_id, novo_username, nova_senha, usuario_logado):
+    senha_hash = hashlib.sha256(nova_senha.encode('utf-8')).hexdigest()
+    sql = "UPDATE USUARIOS SET USERNAME = ?, PASSWORD_HASH = ? WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (novo_username, senha_hash, user_id))
+        conn.commit()
+        registrar_log(usuario_logado, "ATUALIZAR_USUARIO", f"Usuário ID {user_id} atualizado para '{novo_username}'.")
+    finally:
+        if conn: conn.close()
+
+def deletar_usuario(user_id, usuario_logado):
+    sql = "DELETE FROM USUARIOS WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (user_id,))
+        conn.commit()
+        registrar_log(usuario_logado, "DELETAR_USUARIO", f"Usuário ID {user_id} excluído.")
+        return True
+    except fdb.Error:
+        return False
+    finally:
+        if conn: conn.close()
+
+#==============================================================================
+# CLIENTES
+#==============================================================================
+def get_total_clientes():
+    sql = "SELECT COUNT(*) FROM CLIENTES"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return cur.fetchone()[0]
+    finally:
+        if conn: conn.close()
+
+def listar_clientes():
+    sql = "SELECT * FROM CLIENTES ORDER BY NOME"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
+    sql = "INSERT INTO CLIENTES (NOME, TIPO_ENVIO, CONTATO, GERA_RECIBO, CONTA_XMLS, NIVEL, OUTROS_DETALHES, NUMERO_COMPUTADORES) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores))
+        conn.commit()
+        registrar_log(usuario_logado, "CRIAR_CLIENTE", f"Cliente '{nome}' adicionado.")
+    finally:
+        if conn: conn.close()
+
+def atualizar_cliente(cliente_id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
+    sql = "UPDATE CLIENTES SET NOME=?, TIPO_ENVIO=?, CONTATO=?, GERA_RECIBO=?, CONTA_XMLS=?, NIVEL=?, OUTROS_DETALHES=?, NUMERO_COMPUTADORES=? WHERE ID=?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores, cliente_id))
+        conn.commit()
+        registrar_log(usuario_logado, "ATUALIZAR_CLIENTE", f"Cliente '{nome}' (ID: {cliente_id}) atualizado.")
+    finally:
+        if conn: conn.close()
+
+def deletar_cliente(cliente_id, usuario_logado):
+    sql = "DELETE FROM CLIENTES WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (cliente_id,))
+        conn.commit()
+        registrar_log(usuario_logado, "DELETAR_CLIENTE", f"Cliente ID {cliente_id} excluído.")
+    finally:
+        if conn: conn.close()
+
+#==============================================================================
+# STATUS
+#==============================================================================
+def listar_status():
+    sql = "SELECT ID, NOME, COR_HEX FROM STATUS ORDER BY ID"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def adicionar_status(nome, cor_hex, usuario_logado):
+    sql = "INSERT INTO STATUS (NOME, COR_HEX) VALUES (?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (nome, cor_hex))
+        conn.commit()
+        registrar_log(usuario_logado, "CRIAR_STATUS", f"Status '{nome}' criado.")
+    finally:
+        if conn: conn.close()
+
+def atualizar_status(status_id, nome, cor_hex, usuario_logado):
+    sql = "UPDATE STATUS SET NOME = ?, COR_HEX = ? WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (nome, cor_hex, status_id))
+        conn.commit()
+        registrar_log(usuario_logado, "ATUALIZAR_STATUS", f"Status '{nome}' (ID: {status_id}) atualizado.")
+    finally:
+        if conn: conn.close()
+
+def deletar_status(status_id, usuario_logado):
+    sql = "DELETE FROM STATUS WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (status_id,))
+        conn.commit()
+        registrar_log(usuario_logado, "DELETAR_STATUS", f"Status ID {status_id} excluído.")
+    finally:
+        if conn: conn.close()
+
+#==============================================================================
+# ENTREGAS / AGENDAMENTOS
+#==============================================================================
+def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
+    sql = "INSERT INTO ENTREGAS (DATA_VENCIMENTO, HORARIO, STATUS_ID, CLIENTE_ID, RESPONSAVEL, OBSERVACOES) VALUES (?, ?, ?, ?, ?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data, horario, status_id, cliente_id, responsavel, observacoes))
+        conn.commit()
+        registrar_log(usuario_logado, "CRIAR_AGENDAMENTO", f"Agendamento para cliente ID {cliente_id} em {data} às {horario}.")
+    finally:
+        if conn: conn.close()
+
+def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
+    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=? WHERE ID=?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, entrega_id))
+        conn.commit()
+        registrar_log(usuario_logado, "ATUALIZAR_AGENDAMENTO", f"Agendamento ID {entrega_id} atualizado.")
+    finally:
+        if conn: conn.close()
+
+def deletar_entrega(entrega_id, usuario_logado):
+    sql = "DELETE FROM ENTREGAS WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (entrega_id,))
+        conn.commit()
+        registrar_log(usuario_logado, "DELETAR_AGENDAMENTO", f"Agendamento ID {entrega_id} excluído.")
+    finally:
+        if conn: conn.close()
+
+def get_entregas_por_dia(data_str):
+    sql = """
+        SELECT
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES,
+            c.NOME as NOME_CLIENTE, c.CONTATO, c.TIPO_ENVIO, c.NUMERO_COMPUTADORES,
+            s.NOME as NOME_STATUS, s.COR_HEX
+        FROM ENTREGAS e
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.DATA_VENCIMENTO = ?
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data_str,))
+        entregas = {}
+        for row in cur.fetchall():
+            entrega_dict = dict_factory(cur, row)
+            if entrega_dict:
+                entregas[entrega_dict['HORARIO']] = entrega_dict
+        return entregas
+    finally:
+        if conn: conn.close()
+        
+#==============================================================================
+# FUNÇÕES PARA O DASHBOARD E RELATÓRIOS
+#==============================================================================
+def get_estatisticas_mensais(ano, mes):
+    sql_concluidos = """
+        SELECT COUNT(*) FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE UPPER(s.NOME) LIKE '%FEITO%' AND EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+    """
+    sql_retificados = """
+        SELECT COUNT(*) FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE UPPER(s.NOME) LIKE '%RETIFICADO%' AND EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql_concluidos, (ano, mes))
+        concluidos = cur.fetchone()[0]
+        cur.execute(sql_retificados, (ano, mes))
+        retificados = cur.fetchone()[0]
+        return {'CONCLUIDOS': concluidos, 'RETIFICADOS': retificados}
+    finally:
+        if conn: conn.close()
 
 def get_clientes_com_agendamento_no_mes(ano, mes):
-    conn = conectar()
-    query = """
-        SELECT DISTINCT cliente_id 
-        FROM entregas
-        WHERE strftime('%Y', data_vencimento) = ? AND strftime('%m', data_vencimento) = ?
-    """
-    cursor = conn.execute(query, (str(ano), f"{int(mes):02d}"))
-    ids_clientes = {row['cliente_id'] for row in cursor.fetchall()}
-    conn.close()
-    return ids_clientes
-
-def get_total_clientes():
-    conn = conectar()
-    cursor = conn.execute("SELECT COUNT(id) as total FROM clientes")
-    resultado = cursor.fetchone()
-    conn.close()
-    return resultado['total'] if resultado else 0
+    sql = "SELECT DISTINCT CLIENTE_ID FROM ENTREGAS WHERE EXTRACT(YEAR FROM DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM DATA_VENCIMENTO) = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        if conn: conn.close()
 
 def get_clientes_com_agendamento_concluido_no_mes(ano, mes):
-    ids_concluidos = _get_ids_status_concluido()
-    if not ids_concluidos:
-        return set()
-    placeholders = ','.join('?' for _ in ids_concluidos)
-    conn = conectar()
-    query = f"""
-        SELECT DISTINCT cliente_id 
-        FROM entregas
-        WHERE status_id IN ({placeholders}) AND
-              strftime('%Y', data_vencimento) = ? AND 
-              strftime('%m', data_vencimento) = ?
+    sql = """
+        SELECT DISTINCT e.CLIENTE_ID FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE UPPER(s.NOME) LIKE '%FEITO%' AND EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
     """
-    params = list(ids_concluidos) + [str(ano), f"{int(mes):02d}"]
-    cursor = conn.execute(query, params)
-    ids_clientes = {row['cliente_id'] for row in cursor.fetchall()}
-    conn.close()
-    return ids_clientes
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        if conn: conn.close()
+
+def get_status_dias_para_mes(ano, mes):
+    sql = """
+        SELECT
+            EXTRACT(DAY FROM e.DATA_VENCIMENTO),
+            COUNT(e.ID),
+            (SELECT FIRST 1 s.COR_HEX FROM ENTREGAS e2 JOIN STATUS s ON e2.STATUS_ID = s.ID WHERE e2.DATA_VENCIMENTO = e.DATA_VENCIMENTO ORDER BY s.ID)
+        FROM ENTREGAS e
+        WHERE EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+        GROUP BY e.DATA_VENCIMENTO
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        status_dias = {}
+        for row in cur.fetchall():
+            dia, contagem, cor = row
+            status_dias[int(dia)] = {'CONTAGEM': contagem, 'COR': cor}
+        return status_dias
+    finally:
+        if conn: conn.close()
+
+def get_entregas_no_intervalo(data, hora_inicio, hora_fim):
+    sql = """
+        SELECT e.ID, e.HORARIO, c.NOME AS NOME_CLIENTE, s.NOME AS NOME_STATUS
+        FROM ENTREGAS e
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.DATA_VENCIMENTO = ? AND e.HORARIO >= ? AND e.HORARIO < ?
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data, hora_inicio, hora_fim))
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def get_entregas_filtradas(data_inicio, data_fim, status_ids):
+    base_sql = """
+        SELECT e.DATA_VENCIMENTO, e.HORARIO, c.NOME AS NOME_CLIENTE, s.NOME AS NOME_STATUS, e.RESPONSAVEL, c.CONTATO, c.TIPO_ENVIO, e.OBSERVACOES
+        FROM ENTREGAS e
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.DATA_VENCIMENTO BETWEEN ? AND ?
+    """
+    params = [data_inicio, data_fim]
+    if status_ids:
+        placeholders = ', '.join(['?' for _ in status_ids])
+        base_sql += f" AND s.ID IN ({placeholders})"
+        params.extend(status_ids)
+    
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(base_sql, params)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def get_logs_filtrados(data_inicio, data_fim, usuario):
+    base_sql = "SELECT DATAHORA as timestamp, USUARIO_NOME as usuario_nome, ACAO as acao, DETALHES as detalhes FROM LOGS WHERE DATAHORA BETWEEN ? AND ?"
+    params = [data_inicio, data_fim]
+    if usuario != "Todos":
+        base_sql += " AND USUARIO_NOME = ?"
+        params.append(usuario)
+
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(base_sql, params)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
 
 def get_estatisticas_por_usuario_e_status():
-    """
-    Busca um histórico de contagem de agendamentos, agrupado por
-    mês, responsável e status.
-    """
-    conn = conectar()
-    # Esta query usa GROUP BY para agrupar as contagens da forma que queremos.
-    query = """
+    sql = """
         SELECT
-            strftime('%Y-%m', e.data_vencimento) as mes,
-            e.responsavel,
-            s.nome as nome_status,
-            COUNT(e.id) as contagem
-        FROM
-            entregas as e
-        JOIN
-            status as s ON e.status_id = s.id
-        WHERE
-            e.responsavel IS NOT NULL AND e.responsavel != ''
-        GROUP BY
-            mes, e.responsavel, s.nome
-        ORDER BY
-            mes DESC, e.responsavel, s.nome;
+            EXTRACT(MONTH FROM e.DATA_VENCIMENTO) || '/' || EXTRACT(YEAR FROM e.DATA_VENCIMENTO) as MES,
+            e.RESPONSAVEL,
+            s.NOME as NOME_STATUS,
+            COUNT(*) as CONTAGEM
+        FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.RESPONSAVEL IS NOT NULL AND e.RESPONSAVEL <> ''
+        GROUP BY MES, e.RESPONSAVEL, s.NOME
     """
-    cursor = conn.execute(query)
-    dados = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return dados
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
