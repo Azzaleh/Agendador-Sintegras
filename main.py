@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QFileDialog, QFormLayout, QCheckBox, QTextEdit, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
                              QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, 
-                             QListWidgetItem, QMenu, QTreeWidget, QTreeWidgetItem, QToolTip)
+                             QListWidgetItem, QMenu, QTreeWidget, QTreeWidgetItem, QToolTip,QCompleter)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
 from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread
 
@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.3"
+VERSAO_ATUAL = "1.4"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -93,14 +93,23 @@ class LoginDialog(QDialog):
     def tentar_login(self):
         username = self.usuario_edit.text()
         password = self.senha_edit.text()
-        usuario = database.verificar_usuario(username, password)
-        if usuario:
-            self.usuario_logado = usuario
-            self.accept()
-        else:
-            QMessageBox.warning(self, "Erro de Login", "Usuário ou senha inválidos.")
-            self.senha_edit.clear()
 
+        # ======================= INÍCIO DA MODIFICAÇÃO =======================
+        # Adicionamos um bloco try...except para capturar erros de conexão.
+        try:
+            usuario = database.verificar_usuario(username, password)
+            if usuario:
+                self.usuario_logado = usuario
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Erro de Login", "Usuário ou senha inválidos.")
+                self.senha_edit.clear()
+        except Exception as e:
+
+            QMessageBox.critical(self, "Erro de Conexão com o Banco de Dados",
+                                 f"Não foi possível conectar ao banco de dados.\n"
+                                 f"Verifique as suas configurações ou se o serviço do Firebird está a ser executado.\n\n"
+                                 f"Erro técnico: {e}")
     def resetar_configuracoes(self):
         reply = QMessageBox.question(self, "Confirmar Limpeza de Configurações",
                                    "Isso irá apagar todas as configurações salvas (incluindo dados de conexão com o banco e horários).\n\n"
@@ -200,7 +209,8 @@ class DialogoCliente(QDialog):
         self.detalhes_edit = QTextEdit()
         self.detalhes_edit.setPlaceholderText("Detalhes adicionais sobre o cliente...")
         self.num_computadores_spin = QSpinBox()
-        self.num_computadores_spin.setRange(0, 9999)
+        self.num_computadores_spin.setRange(1, 9999)
+        self.num_computadores_spin.setValue(1)
         form_layout.addRow("Nº de Computadores:", self.num_computadores_spin)
         form_layout.addRow("Nome*:", self.nome_edit)
         form_layout.addRow("Tipo de Envio*:", self.tipo_envio_combo)
@@ -565,10 +575,22 @@ class EntregaDialog(QDialog):
         self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
         layout = QFormLayout(self)
 
+        # ======================= INÍCIO DA MODIFICAÇÃO =======================
+        # O QComboBox agora é editável para permitir a digitação e busca.
         self.cliente_combo = QComboBox()
+        self.cliente_combo.setEditable(True)
+        # Impede que o usuário adicione um novo item à lista apenas digitando.
+        self.cliente_combo.setInsertPolicy(QComboBox.NoInsert)
+        # Ajusta a forma como o texto digitado é completado.
+        self.cliente_combo.completer().setCompletionMode(QCompleter.PopupCompletion)
+        # ======================= FIM DA MODIFICAÇÃO =========================
+
         self.status_combo = QComboBox()
         self.responsavel_edit = QLineEdit()
         self.observacoes_edit = QTextEdit()
+        
+        self.retificacao_check = QCheckBox("É Retificação?")
+        
         self.rascunho_edit = QLineEdit()
         self.rascunho_edit.setReadOnly(True)
         self.rascunho_edit.setPlaceholderText("Selecione um cliente e status...")
@@ -587,6 +609,7 @@ class EntregaDialog(QDialog):
         layout.addRow("Cliente:", self.cliente_combo)
         layout.addRow("Status:", self.status_combo)
         layout.addRow("Responsável:", self.responsavel_edit)
+        layout.addRow("", self.retificacao_check)
         layout.addRow("Rascunho:", rascunho_layout)
         layout.addRow("Observações:", self.observacoes_edit)
 
@@ -598,8 +621,10 @@ class EntregaDialog(QDialog):
             if entrega_data.get('RESPONSAVEL'):
                  self.responsavel_edit.setText(entrega_data['RESPONSAVEL'])
             self.observacoes_edit.setText(entrega_data.get('OBSERVACOES', ''))
+            self.retificacao_check.setChecked(bool(entrega_data.get('IS_RETIFICACAO', 0)))
         else:
-            index_pendente = self.status_combo.findText("PENDENTE")
+            # Mantido o nome original "PENDENTE" para compatibilidade
+            index_pendente = self.status_combo.findText("Pendente") 
             if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
             
         botoes_layout = QHBoxLayout()
@@ -629,6 +654,22 @@ class EntregaDialog(QDialog):
         else:
             for cliente in clientes:
                 self.cliente_combo.addItem(cliente['NOME'], cliente['ID'])
+
+        # ======================= INÍCIO DA MODIFICAÇÃO =======================
+        # Configuração do QCompleter para a busca dinâmica.
+        # Criamos um QCompleter com a lista de nomes de clientes.
+        completer = QCompleter([self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())], self)
+        
+        # Faz com que a busca não diferencie maiúsculas de minúsculas (ex: "real" encontra "REAL").
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        
+        # Esta é a parte mais importante: muda o filtro para encontrar o texto em QUALQUER LUGAR.
+        completer.setFilterMode(Qt.MatchContains)
+        
+        # Associamos o nosso completer customizado ao QComboBox.
+        self.cliente_combo.setCompleter(completer)
+        # ======================= FIM DA MODIFICAÇÃO =========================
+
         for status in status_list:
             self.status_combo.addItem(status['NOME'], status['ID'])
 
@@ -637,7 +678,7 @@ class EntregaDialog(QDialog):
         nome_cliente = self.cliente_combo.currentText()
         nome_status = self.status_combo.currentText()
         data_str = self.date.toString("MM/yyyy")
-        if nome_status.lower() == 'retificado':
+        if nome_status and nome_status.lower() == 'retificado':
             texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
         else:
             texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
@@ -659,11 +700,14 @@ class EntregaDialog(QDialog):
             QTimer.singleShot(1500, restaurar_botao)
 
     def get_data(self):
+        # A forma mais simples e robusta é pegar diretamente os dados do item selecionado.
+        # O QCompleter apenas ajuda a definir o item atual, mas o QComboBox gerencia os dados.
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
             "responsavel": self.responsavel_edit.text().strip(),
-            "observacoes": self.observacoes_edit.toPlainText().strip()
+            "observacoes": self.observacoes_edit.toPlainText().strip(),
+            "is_retificacao": self.retificacao_check.isChecked()
         }
 
 class DayViewDialog(QDialog):
@@ -699,19 +743,38 @@ class DayViewDialog(QDialog):
         self.tabela_agenda.setRowCount(0)
         self.tabela_agenda.setRowCount(len(self.horarios))
         agendamentos_dia = database.get_entregas_por_dia(self.date.toString("yyyy-MM-dd"))
+        
         for i, horario in enumerate(self.horarios):
             item_horario = QTableWidgetItem(horario)
             item_horario.setTextAlignment(Qt.AlignCenter)
             self.tabela_agenda.setItem(i, 0, item_horario)
+            
             if horario in agendamentos_dia:
                 agendamento = agendamentos_dia[horario]
                 
-                self.tabela_agenda.setItem(i, 1, QTableWidgetItem(agendamento['NOME_CLIENTE']))
-                self.tabela_agenda.setItem(i, 2, QTableWidgetItem(agendamento['CONTATO']))
-                self.tabela_agenda.setItem(i, 3, QTableWidgetItem(agendamento['TIPO_ENVIO']))
-                item_status = QTableWidgetItem(agendamento['NOME_STATUS'])
-                item_status.setBackground(QColor(agendamento['COR_HEX']))
+                # --- NOVA LÓGICA DE COR DE LINHA PARA RETIFICAÇÃO ---
+                is_retificacao = agendamento.get('IS_RETIFICACAO', 0)
+                cor_fundo_linha = QColor("#17a2b8") if is_retificacao else None
+
+                def create_item_with_bg(text, background_color):
+                    item = QTableWidgetItem(str(text))
+                    if background_color:
+                        item.setBackground(background_color)
+                    return item
+
+                self.tabela_agenda.setItem(i, 1, create_item_with_bg(agendamento['NOME_CLIENTE'], cor_fundo_linha))
+                self.tabela_agenda.setItem(i, 2, create_item_with_bg(agendamento['CONTATO'], cor_fundo_linha))
+                self.tabela_agenda.setItem(i, 3, create_item_with_bg(agendamento['TIPO_ENVIO'], cor_fundo_linha))
+                
+                item_status = create_item_with_bg(agendamento['NOME_STATUS'], cor_fundo_linha)
+                if not is_retificacao:
+                     item_status.setBackground(QColor(agendamento['COR_HEX']))
                 self.tabela_agenda.setItem(i, 4, item_status)
+                
+                if cor_fundo_linha:
+                    item_horario.setBackground(cor_fundo_linha)
+                # --- FIM DA LÓGICA DE COR ---
+
                 item_horario.setData(Qt.UserRole, agendamento)
                 observacoes = agendamento.get('OBSERVACOES', 'Nenhuma observação.')
                 num_computadores = agendamento.get('NUMERO_COMPUTADORES', 0)
@@ -735,7 +798,8 @@ class DayViewDialog(QDialog):
             dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
             if dialog.exec_() == QDialog.Accepted:
                 data = dialog.get_data()
-                database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['USERNAME'])
+                # Passa o novo valor de retificação para o banco
+                database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
         self.carregar_agenda_dia()
         self.parent().populate_calendar()
 
@@ -753,7 +817,8 @@ class DayViewDialog(QDialog):
         dialog = EntregaDialog(self.usuario_logado, self.date, entrega_data=agendamento_existente, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
-            database.atualizar_entrega(agendamento_existente['ID'], agendamento_existente['HORARIO'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], self.usuario_logado['USERNAME'])
+            # Passa o novo valor de retificação para o banco
+            database.atualizar_entrega(agendamento_existente['ID'], agendamento_existente['HORARIO'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
             self.carregar_agenda_dia()
             self.parent().populate_calendar()
 
@@ -1547,27 +1612,33 @@ class CalendarWindow(QMainWindow):
 if __name__ == '__main__':
     QApplication.setOrganizationName("Data Servis")
     QApplication.setApplicationName("Agendador")
-    database.iniciar_db()
+    
+    # ======================= INÍCIO DA MODIFICAÇÃO =======================
+    # REMOVEMOS a chamada a `database.iniciar_db()` daqui.
+    # O programa agora irá direto para a tela de login.
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
-    """
-    theme_manager = ThemeManager()
-    def apply_theme(theme_name):
-        stylesheet = load_stylesheet(theme_name)
-        app.setStyleSheet(stylesheet)
-    theme_manager.theme_changed.connect(apply_theme)
-    theme_manager.apply_initial_theme(app)"""
-    """
-    print("⚠️  Limpando configurações de desenvolvimento...")
-    settings = QSettings()
-    settings.clear()
-    print("✅ Configurações limpas com sucesso!")"""
 
     login = LoginDialog()
+    
+    # O programa só continuará se o login for bem-sucedido.
     if login.exec_() == QDialog.Accepted:
         usuario_logado = login.usuario_logado
+        
+        # AGORA, após o login bem-sucedido, nós inicializamos e preparamos o banco.
+        # Isto garante que a conexão funciona e que as tabelas existem.
+        try:
+            database.iniciar_db()
+        except Exception as e:
+            QMessageBox.critical(None, "Erro Crítico de Banco de Dados",
+                                 f"A conexão foi bem-sucedida, mas ocorreu um erro ao inicializar as tabelas do banco de dados.\n"
+                                 f"Erro: {e}")
+            sys.exit(1)
+
         window = CalendarWindow(usuario_logado)
         window.show()
         sys.exit(app.exec_())
     else:
+        # Se o usuário fechar a janela de login, o programa termina.
         sys.exit(0)

@@ -1,4 +1,4 @@
-# database.py — Versão FINAL completa com conexão dinâmica
+# database.py — Versão FINAL completa com conexão dinâmica e campo de retificação
 import fdb
 import hashlib
 import os
@@ -99,10 +99,11 @@ def iniciar_db():
         cur.execute("CREATE TABLE STATUS (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(50) UNIQUE NOT NULL, COR_HEX VARCHAR(10) NOT NULL)")
         criar_generator_e_trigger(cur, 'STATUS')
     if not tabela_existe(cur, 'CLIENTES'):
-        cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(20) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
+        cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
         criar_generator_e_trigger(cur, 'CLIENTES')
     if not tabela_existe(cur, 'ENTREGAS'):
-        cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(50), OBSERVACOES BLOB SUB_TYPE TEXT, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
+        # ADICIONADO O CAMPO IS_RETIFICACAO
+        cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(50), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
@@ -116,7 +117,7 @@ def iniciar_db():
         cur.execute("INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH) VALUES (?, ?)", ('admin', senha_hash))
     cur.execute("SELECT COUNT(*) FROM STATUS")
     if cur.fetchone()[0] == 0:
-        status_padrao = [('PENDENTE', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')]
+        status_padrao = [('Pendente', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')]
         cur.executemany("INSERT INTO STATUS (NOME, COR_HEX) VALUES (?, ?)", status_padrao)
     conn.commit()
     conn.close()
@@ -362,25 +363,25 @@ def deletar_status(status_id, usuario_logado):
 #==============================================================================
 # ENTREGAS / AGENDAMENTOS
 #==============================================================================
-def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
-    sql = "INSERT INTO ENTREGAS (DATA_VENCIMENTO, HORARIO, STATUS_ID, CLIENTE_ID, RESPONSAVEL, OBSERVACOES) VALUES (?, ?, ?, ?, ?, ?)"
+def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado):
+    sql = "INSERT INTO ENTREGAS (DATA_VENCIMENTO, HORARIO, STATUS_ID, CLIENTE_ID, RESPONSAVEL, OBSERVACOES, IS_RETIFICACAO) VALUES (?, ?, ?, ?, ?, ?, ?)"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (data, horario, status_id, cliente_id, responsavel, observacoes))
+        cur.execute(sql, (data, horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0))
         conn.commit()
         registrar_log(usuario_logado, "CRIAR_AGENDAMENTO", f"Agendamento para cliente ID {cliente_id} em {data} às {horario}.")
     finally:
         if conn: conn.close()
 
-def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, usuario_logado):
-    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=? WHERE ID=?"
+def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado):
+    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=? WHERE ID=?"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, entrega_id))
+        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, entrega_id))
         conn.commit()
         registrar_log(usuario_logado, "ATUALIZAR_AGENDAMENTO", f"Agendamento ID {entrega_id} atualizado.")
     finally:
@@ -399,9 +400,10 @@ def deletar_entrega(entrega_id, usuario_logado):
         if conn: conn.close()
 
 def get_entregas_por_dia(data_str):
+    # ADICIONADO e.IS_RETIFICACAO AO SELECT
     sql = """
         SELECT
-            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES,
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO,
             c.NOME as NOME_CLIENTE, c.CONTATO, c.TIPO_ENVIO, c.NUMERO_COMPUTADORES,
             s.NOME as NOME_STATUS, s.COR_HEX
         FROM ENTREGAS e
@@ -464,7 +466,7 @@ def get_clientes_com_agendamento_concluido_no_mes(ano, mes):
     sql = """
         SELECT DISTINCT e.CLIENTE_ID FROM ENTREGAS e
         JOIN STATUS s ON e.STATUS_ID = s.ID
-        WHERE UPPER(s.NOME) LIKE '%FEITO%' AND EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+        WHERE UPPER(s.NOME) LIKE '%FEITO%' AND EXTRACT(YEAR FROM e.DATA_VENCimento) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
     """
     conn = None
     try:
