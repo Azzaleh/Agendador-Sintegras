@@ -94,9 +94,8 @@ class LoginDialog(QDialog):
         username = self.usuario_edit.text()
         password = self.senha_edit.text()
 
-        # ======================= INÍCIO DA MODIFICAÇÃO =======================
-        # Adicionamos um bloco try...except para capturar erros de conexão.
         try:
+            # Esta função agora deve funcionar, pois o DB e as tabelas já foram criados
             usuario = database.verificar_usuario(username, password)
             if usuario:
                 self.usuario_logado = usuario
@@ -105,7 +104,7 @@ class LoginDialog(QDialog):
                 QMessageBox.warning(self, "Erro de Login", "Usuário ou senha inválidos.")
                 self.senha_edit.clear()
         except Exception as e:
-
+            # Este erro agora só deve aparecer se o serviço do Firebird parar DEPOIS do programa abrir
             QMessageBox.critical(self, "Erro de Conexão com o Banco de Dados",
                                  f"Não foi possível conectar ao banco de dados.\n"
                                  f"Verifique as suas configurações ou se o serviço do Firebird está a ser executado.\n\n"
@@ -575,15 +574,10 @@ class EntregaDialog(QDialog):
         self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
         layout = QFormLayout(self)
 
-        # ======================= INÍCIO DA MODIFICAÇÃO =======================
-        # O QComboBox agora é editável para permitir a digitação e busca.
         self.cliente_combo = QComboBox()
         self.cliente_combo.setEditable(True)
-        # Impede que o usuário adicione um novo item à lista apenas digitando.
         self.cliente_combo.setInsertPolicy(QComboBox.NoInsert)
-        # Ajusta a forma como o texto digitado é completado.
         self.cliente_combo.completer().setCompletionMode(QCompleter.PopupCompletion)
-        # ======================= FIM DA MODIFICAÇÃO =========================
 
         self.status_combo = QComboBox()
         self.responsavel_edit = QLineEdit()
@@ -623,7 +617,6 @@ class EntregaDialog(QDialog):
             self.observacoes_edit.setText(entrega_data.get('OBSERVACOES', ''))
             self.retificacao_check.setChecked(bool(entrega_data.get('IS_RETIFICACAO', 0)))
         else:
-            # Mantido o nome original "PENDENTE" para compatibilidade
             index_pendente = self.status_combo.findText("Pendente") 
             if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
             
@@ -655,20 +648,13 @@ class EntregaDialog(QDialog):
             for cliente in clientes:
                 self.cliente_combo.addItem(cliente['NOME'], cliente['ID'])
 
-        # ======================= INÍCIO DA MODIFICAÇÃO =======================
-        # Configuração do QCompleter para a busca dinâmica.
-        # Criamos um QCompleter com a lista de nomes de clientes.
         completer = QCompleter([self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())], self)
         
-        # Faz com que a busca não diferencie maiúsculas de minúsculas (ex: "real" encontra "REAL").
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         
-        # Esta é a parte mais importante: muda o filtro para encontrar o texto em QUALQUER LUGAR.
         completer.setFilterMode(Qt.MatchContains)
         
-        # Associamos o nosso completer customizado ao QComboBox.
         self.cliente_combo.setCompleter(completer)
-        # ======================= FIM DA MODIFICAÇÃO =========================
 
         for status in status_list:
             self.status_combo.addItem(status['NOME'], status['ID'])
@@ -700,8 +686,6 @@ class EntregaDialog(QDialog):
             QTimer.singleShot(1500, restaurar_botao)
 
     def get_data(self):
-        # A forma mais simples e robusta é pegar diretamente os dados do item selecionado.
-        # O QCompleter apenas ajuda a definir o item atual, mas o QComboBox gerencia os dados.
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
@@ -752,7 +736,6 @@ class DayViewDialog(QDialog):
             if horario in agendamentos_dia:
                 agendamento = agendamentos_dia[horario]
                 
-                # --- NOVA LÓGICA DE COR DE LINHA PARA RETIFICAÇÃO ---
                 is_retificacao = agendamento.get('IS_RETIFICACAO', 0)
                 cor_fundo_linha = QColor("#17a2b8") if is_retificacao else None
 
@@ -773,7 +756,6 @@ class DayViewDialog(QDialog):
                 
                 if cor_fundo_linha:
                     item_horario.setBackground(cor_fundo_linha)
-                # --- FIM DA LÓGICA DE COR ---
 
                 item_horario.setData(Qt.UserRole, agendamento)
                 observacoes = agendamento.get('OBSERVACOES', 'Nenhuma observação.')
@@ -798,7 +780,6 @@ class DayViewDialog(QDialog):
             dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
             if dialog.exec_() == QDialog.Accepted:
                 data = dialog.get_data()
-                # Passa o novo valor de retificação para o banco
                 database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
         self.carregar_agenda_dia()
         self.parent().populate_calendar()
@@ -817,7 +798,6 @@ class DayViewDialog(QDialog):
         dialog = EntregaDialog(self.usuario_logado, self.date, entrega_data=agendamento_existente, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
-            # Passa o novo valor de retificação para o banco
             database.atualizar_entrega(agendamento_existente['ID'], agendamento_existente['HORARIO'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
             self.carregar_agenda_dia()
             self.parent().populate_calendar()
@@ -957,7 +937,11 @@ class ConfigDialog(QDialog):
         modo_db = self.settings.value("database/modo", "local")
         if modo_db == "remoto": self.radio_remoto.setChecked(True)
         else: self.radio_local.setChecked(True)
-        default_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Agendador', 'CALENDARIO.FDB')
+        if getattr(sys, 'frozen', False):
+            base_path = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        default_path = os.path.join(base_path, 'Data', 'CALENDARIO.FDB')
         self.caminho_local_edit.setText(self.settings.value("database/caminho_local", default_path))
         self.host_remoto_edit.setText(self.settings.value("database/host_remoto", "localhost"))
         self.porta_remota_spin.setValue(self.settings.value("database/porta_remota", 3050, type=int))
@@ -1332,19 +1316,13 @@ class CalendarWindow(QMainWindow):
         self.refresh_timer.start(intervalo_ms)
         print(f"🔄 Atualização automática configurada para cada {intervalo_segundos} segundos.")
 
-        # --- CHAMADA PARA O NOVO MÉTODO DE CENTRALIZAÇÃO ---
         self.center()
 
-    # --- NOVO MÉTODO PARA CENTRALIZAR A JANELA ---
     def center(self):
         """Centraliza a janela na tela principal."""
-        # Geometria da tela disponível (descontando barras de tarefas)
         screen_geometry = QApplication.primaryScreen().availableGeometry()
-        # Geometria da janela atual
         window_geometry = self.frameGeometry()
-        # Move o centro da geometria da janela para o centro da tela
         window_geometry.moveCenter(screen_geometry.center())
-        # Move a janela (o canto superior esquerdo) para a nova posição calculada
         self.move(window_geometry.topLeft())
 
     def _get_cor_porcentagem(self, porcentagem):
@@ -1527,19 +1505,28 @@ class CalendarWindow(QMainWindow):
         if not update_encontrado: self.setWindowTitle(self.original_titulo)
 
     def baixar_e_instalar_atualizacao(self, nova_versao):
-        self.setWindowTitle(f"{self.original_titulo} (Baixando atualização...)")
-        try:
-            nome_arquivo = f"Calendario-v{nova_versao}.exe"
-            url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
-            pasta_downloads = str(Path.home() / "Downloads")
-            caminho_salvar = os.path.join(pasta_downloads, nome_arquivo)
-            from urllib.request import urlretrieve
-            urlretrieve(url_download, caminho_salvar)
-            subprocess.Popen([caminho_salvar])
-            QApplication.instance().quit()
-        except Exception as e:
-            QMessageBox.critical(self, "Erro na Atualização", f"Não foi possível baixar ou executar a atualização.\n\nErro: {e}")
-            self.setWindowTitle(self.original_titulo)
+            self.setWindowTitle(f"{self.original_titulo} (Baixando atualização...)")
+            try:
+                nome_arquivo = f"Calendario-v{nova_versao}.exe"
+                url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
+                
+                # --- INÍCIO DA CORREÇÃO ---
+                # 1. Descobre o caminho do executável que está rodando
+                pasta_do_executavel = os.path.dirname(sys.executable)
+                
+                # 2. Define o caminho completo para salvar o arquivo na mesma pasta
+                caminho_salvar = os.path.join(pasta_do_executavel, nome_arquivo)
+                # --- FIM DA CORREÇÃO ---
+                
+                from urllib.request import urlretrieve
+                urlretrieve(url_download, caminho_salvar)
+                
+                # Abre o novo instalador/executável e fecha o programa atual
+                subprocess.Popen([caminho_salvar])
+                QApplication.instance().quit()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro na Atualização", f"Não foi possível baixar ou executar a atualização.\n\nErro: {e}")
+                self.setWindowTitle(self.original_titulo)
 
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -1613,32 +1600,26 @@ if __name__ == '__main__':
     QApplication.setOrganizationName("Data Servis")
     QApplication.setApplicationName("Agendador")
     
-    # ======================= INÍCIO DA MODIFICAÇÃO =======================
-    # REMOVEMOS a chamada a `database.iniciar_db()` daqui.
-    # O programa agora irá direto para a tela de login.
-
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
 
+    try:
+        database.iniciar_db()
+    except Exception as e:
+        QMessageBox.critical(None, "Erro Crítico de Banco de Dados",
+                             f"Não foi possível conectar ou inicializar o banco de dados.\n"
+                             f"Verifique se o serviço do Firebird está sendo executado e se as configurações estão corretas.\n\n"
+                             f"Erro técnico: {e}")
+        sys.exit(1) 
+
     login = LoginDialog()
     
-    # O programa só continuará se o login for bem-sucedido.
     if login.exec_() == QDialog.Accepted:
         usuario_logado = login.usuario_logado
-        
-        # AGORA, após o login bem-sucedido, nós inicializamos e preparamos o banco.
-        # Isto garante que a conexão funciona e que as tabelas existem.
-        try:
-            database.iniciar_db()
-        except Exception as e:
-            QMessageBox.critical(None, "Erro Crítico de Banco de Dados",
-                                 f"A conexão foi bem-sucedida, mas ocorreu um erro ao inicializar as tabelas do banco de dados.\n"
-                                 f"Erro: {e}")
-            sys.exit(1)
 
         window = CalendarWindow(usuario_logado)
         window.show()
         sys.exit(app.exec_())
     else:
-        # Se o usuário fechar a janela de login, o programa termina.
+
         sys.exit(0)

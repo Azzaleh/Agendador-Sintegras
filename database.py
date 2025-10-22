@@ -2,6 +2,7 @@
 import fdb
 import hashlib
 import os
+import sys
 from datetime import datetime
 from PyQt5.QtCore import QSettings # Importa a classe para ler as configurações
 
@@ -28,25 +29,44 @@ def conectar():
     if modo == "local":
         host = "localhost"
         port = 3050 # Porta padrão para Firebird local
-        # Define um caminho padrão se nenhum estiver salvo ainda
-        default_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Agendador', 'CALENDARIO.FDB')
-        database_path = settings.value("database/caminho_local", default_path)
 
-        # Cria o diretório e o banco de dados se não existirem (apenas no modo local)
-        db_dir = os.path.dirname(database_path)
-        if not os.path.exists(db_dir):
-            os.makedirs(db_dir)
+        # --- INÍCIO DA CORREÇÃO ---
         
+        # 1. Tenta carregar o caminho salvo nas configurações pelo usuário
+        database_path = settings.value("database/caminho_local", "")
+
+        # 2. Se nenhum caminho foi salvo (string vazia), usa a lógica antiga como PADRÃO.
+        #    Isso mantém o comportamento de criar um banco automático na primeira vez.
+        if not database_path:
+            print(" Nenhum caminho de banco de dados local configurado. Usando caminho padrão.")
+            # Determina o caminho base (onde o executável ou script está)
+            if getattr(sys, 'frozen', False):  # Se for executável compilado (PyInstaller)
+                base_path = os.path.dirname(sys.executable)
+            else:  # Se estiver rodando como script .py
+                base_path = os.path.dirname(os.path.abspath(__file__))
+
+            # Constrói o caminho para a pasta 'Data'
+            data_folder = os.path.join(base_path, 'Data')
+
+            # Cria a pasta 'Data' se ela não existir
+            os.makedirs(data_folder, exist_ok=True)
+
+            # Define o caminho completo e final para o arquivo do banco de dados
+            database_path = os.path.join(data_folder, 'CALENDARIO.FDB')
+        
+        # 3. A lógica de criação do banco de dados agora usará o caminho correto
+        #    (seja o que veio das configurações ou o padrão)
         if not os.path.exists(database_path):
             print(f"🆕 Criando banco de dados local em: {database_path}")
             fdb.create_database(dsn=f"{host}/{port}:{database_path}", user=user, password=password)
+        
+        # --- FIM DA CORREÇÃO ---
 
     else: # modo == "remoto"
         host = settings.value("database/host_remoto", "localhost")
         port = settings.value("database/porta_remota", 3050, type=int)
         database_path = settings.value("database/caminho_remoto", "")
         if not host or not database_path:
-            # Esta exceção pode ser tratada na UI para avisar o usuário
             raise ConnectionError("Configuração remota incompleta: Host ou Caminho do banco não definido.")
 
     # --- Tenta conectar com as configurações carregadas ---
@@ -62,7 +82,6 @@ def conectar():
         )
     except fdb.Error as e:
         print(f"❌ Erro crítico ao conectar ao banco de dados: {e}")
-        # Lança a exceção para que a aplicação principal possa tratar o erro
         raise
 
 def tabela_existe(cur, nome_tabela):
@@ -105,6 +124,19 @@ def iniciar_db():
         # ADICIONADO O CAMPO IS_RETIFICACAO
         cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(50), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
+
+    else:
+        try:
+            cur.execute("""
+                SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS
+                WHERE RDB$RELATION_NAME = 'ENTREGAS' AND RDB$FIELD_NAME = 'IS_RETIFICACAO'
+            """)
+            if cur.fetchone() is None:
+                print("🩵 Adicionando campo IS_RETIFICACAO na tabela ENTREGAS...")
+                cur.execute("ALTER TABLE ENTREGAS ADD IS_RETIFICACAO SMALLINT DEFAULT 0;")
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️ Erro ao verificar/adicionar campo IS_RETIFICACAO: {e}")    
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
         criar_generator_e_trigger(cur, 'LOGS')
