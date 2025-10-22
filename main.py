@@ -14,13 +14,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, 
                              QListWidgetItem, QMenu, QTreeWidget, QTreeWidgetItem, QToolTip,QCompleter)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
-from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread
+from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread,QStringListModel
 
 import database 
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.4"
+VERSAO_ATUAL = "1.5"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -285,6 +285,217 @@ class DialogoClientesPendentes(QDialog):
             else:
                 item.setHidden(True)
 
+class DialogoClientesInativos(QDialog):
+    def __init__(self, lista_clientes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Relatório de Atividade de Clientes")
+        self.setMinimumSize(700, 500)
+
+        layout = QVBoxLayout(self)
+        titulo_label = QLabel("<b>Clientes com 3 meses ou mais sem agendamentos:</b>")
+        titulo_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(titulo_label)
+
+        # Filtro de busca
+        busca_layout = QHBoxLayout()
+        busca_layout.addWidget(QLabel("Buscar:"))
+        self.busca_edit = QLineEdit()
+        self.busca_edit.setPlaceholderText("Digite para filtrar a lista...")
+        busca_layout.addWidget(self.busca_edit)
+        layout.addLayout(busca_layout)
+
+        # Tabela de resultados
+        self.tabela_inativos = QTableWidget()
+        self.tabela_inativos.setColumnCount(3)
+        self.tabela_inativos.setHorizontalHeaderLabels(["Cliente", "Contato", "Status (Tempo Inativo)"])
+        self.tabela_inativos.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabela_inativos.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabela_inativos.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabela_inativos.setSortingEnabled(True)
+        layout.addWidget(self.tabela_inativos)
+        
+        self.popular_tabela(lista_clientes)
+        
+        self.busca_edit.textChanged.connect(self.filtrar_tabela)
+
+        fechar_btn = QPushButton("Fechar")
+        fechar_btn.clicked.connect(self.accept)
+        layout.addWidget(fechar_btn, alignment=Qt.AlignRight)
+
+    def popular_tabela(self, lista_clientes):
+        hoje = datetime.now()
+        clientes_inativos = []
+
+        # Filtra a lista para incluir apenas clientes inativos há 3 meses ou mais
+        for cliente in lista_clientes:
+            ultimo_agendamento = cliente.get('ULTIMO_AGENDAMENTO')
+            status = ""
+            meses_inativo = 999 # Um número alto para quem nunca agendou
+
+            if ultimo_agendamento is None:
+                status = "Nunca agendou"
+            else:
+                # Converte a data do banco para objeto datetime
+                data_ultimo = datetime.strptime(str(ultimo_agendamento), '%Y-%m-%d')
+                diferenca = hoje - data_ultimo
+                meses_inativo = diferenca.days // 30
+                
+                if meses_inativo == 0:
+                    status = f"Agendou há {diferenca.days} dias"
+                elif meses_inativo == 1:
+                    status = "Agendou há 1 mês"
+                else:
+                    status = f"Não agenda há {meses_inativo} meses"
+            
+            # Adiciona à lista apenas se for inativo há 3 meses ou mais (ou nunca agendou)
+            if meses_inativo >= 3:
+                cliente['status_formatado'] = status
+                clientes_inativos.append(cliente)
+
+        self.tabela_inativos.setRowCount(len(clientes_inativos))
+        for i, cliente in enumerate(clientes_inativos):
+            self.tabela_inativos.setItem(i, 0, QTableWidgetItem(cliente['NOME']))
+            self.tabela_inativos.setItem(i, 1, QTableWidgetItem(cliente.get('CONTATO', '')))
+            self.tabela_inativos.setItem(i, 2, QTableWidgetItem(cliente['status_formatado']))
+    
+    def filtrar_tabela(self):
+        texto_busca = self.busca_edit.text().lower().strip()
+        for i in range(self.tabela_inativos.rowCount()):
+            item_nome = self.tabela_inativos.item(i, 0)
+            if item_nome and texto_busca in item_nome.text().lower():
+                self.tabela_inativos.setRowHidden(i, False)
+            else:
+                self.tabela_inativos.setRowHidden(i, True)
+
+class DialogoEstatisticasCliente(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Análise de Performance de Clientes")
+        self.setMinimumSize(750, 600)
+
+        # Layout Principal
+        main_layout = QVBoxLayout(self)
+
+        # --- Filtros ---
+        filtros_group = QGroupBox("Filtros")
+        filtros_layout = QFormLayout(filtros_group)
+        self.cliente_combo = QComboBox()
+        self.cliente_combo.setEditable(True)
+        self.cliente_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.data_inicio_edit = QDateEdit(QDate.currentDate().addMonths(-3))
+        self.data_inicio_edit.setCalendarPopup(True)
+        self.data_fim_edit = QDateEdit(QDate.currentDate())
+        self.data_fim_edit.setCalendarPopup(True)
+        self.analisar_btn = QPushButton("Analisar")
+
+        filtros_layout.addRow("Cliente:", self.cliente_combo)
+        filtros_layout.addRow("Período de:", self.data_inicio_edit)
+        filtros_layout.addRow("Até:", self.data_fim_edit)
+        filtros_layout.addRow(self.analisar_btn)
+        main_layout.addWidget(filtros_group)
+
+        # --- Resultados ---
+        resultados_layout = QHBoxLayout()
+        # Resultado Individual
+        individual_group = QGroupBox("Análise do Cliente Selecionado")
+        individual_layout = QVBoxLayout(individual_group)
+        self.resultado_individual_label = QLabel("<i>Selecione um cliente e um período e clique em 'Analisar'.</i>")
+        self.resultado_individual_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        individual_layout.addWidget(self.resultado_individual_label)
+        # Rankings Gerais
+        ranking_group = QGroupBox("Destaques do Período (Todos os Clientes)")
+        ranking_layout = QVBoxLayout(ranking_group)
+        self.resultado_ranking_label = QLabel("<i>...</i>")
+        self.resultado_ranking_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        ranking_layout.addWidget(self.resultado_ranking_label)
+
+        resultados_layout.addWidget(individual_group)
+        resultados_layout.addWidget(ranking_group)
+        main_layout.addLayout(resultados_layout)
+        
+        self.carregar_clientes_combo()
+        self.analisar_btn.clicked.connect(self.realizar_analise)
+
+    def carregar_clientes_combo(self):
+        clientes = database.listar_clientes()
+        for cliente in sorted(clientes, key=lambda x: x['NOME']):
+            self.cliente_combo.addItem(cliente['NOME'], cliente['ID'])
+        
+        completer = QCompleter([self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())], self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.cliente_combo.setCompleter(completer)
+
+    def realizar_analise(self):
+        cliente_id = self.cliente_combo.currentData()
+        cliente_nome = self.cliente_combo.currentText()
+        data_inicio = self.data_inicio_edit.date().toString("yyyy-MM-dd")
+        data_fim = self.data_fim_edit.date().toString("yyyy-MM-dd")
+
+        if not cliente_id:
+            QMessageBox.warning(self, "Aviso", "Por favor, selecione um cliente válido.")
+            return
+
+        # 1. Análise Individual (sem alteração)
+        stats_cliente = database.get_estatisticas_cliente_periodo(cliente_id, data_inicio, data_fim)
+        texto_individual = f"<b>{cliente_nome}</b><br><hr>"
+        if not stats_cliente:
+            texto_individual += "Nenhum agendamento encontrado no período."
+        else:
+            for status, contagem in stats_cliente.items():
+                texto_individual += f"<b>• {status}:</b> {contagem}<br>"
+        self.resultado_individual_label.setText(texto_individual)
+
+        # --- INÍCIO DA CORREÇÃO ---
+        # 2. Análise de Ranking (lógica atualizada)
+        dados_ranking = database.get_dados_ranking_clientes_periodo(data_inicio, data_fim)
+        texto_ranking = ""
+        if not dados_ranking:
+            texto_ranking = "Nenhum dado para gerar destaques."
+        else:
+            # --- Encontrar os "MAIS" ---
+            mais_concluidos = max(dados_ranking, key=lambda x: x['CONCLUIDOS'])
+            mais_retificados = max(dados_ranking, key=lambda x: x['RETIFICADOS'])
+            mais_remarcados = max(dados_ranking, key=lambda x: x['REMARCADOS'])
+            mais_erros = max(dados_ranking, key=lambda x: x['ERROS'])
+
+            # --- Encontrar os "MENOS" (ignorando os que têm 0) ---
+            clientes_com_retificados = [c for c in dados_ranking if c['RETIFICADOS'] > 0]
+            menos_retificados = min(clientes_com_retificados, key=lambda x: x['RETIFICADOS']) if clientes_com_retificados else None
+            
+            clientes_com_remarcados = [c for c in dados_ranking if c['REMARCADOS'] > 0]
+            menos_remarcados = min(clientes_com_remarcados, key=lambda x: x['REMARCADOS']) if clientes_com_remarcados else None
+
+            clientes_com_erros = [c for c in dados_ranking if c['ERROS'] > 0]
+            menos_erros = min(clientes_com_erros, key=lambda x: x['ERROS']) if clientes_com_erros else None
+
+            # --- Monta o texto de exibição ---
+            texto_ranking += "<b><u>Mais Produtivo</u> (Concluídos):</b><br>"
+            texto_ranking += f"{mais_concluidos['NOME']} ({mais_concluidos['CONCLUIDOS']})<br><br>"
+            
+            texto_ranking += "<b><u>Mais Retificações:</u></b><br>"
+            texto_ranking += f"{mais_retificados['NOME']} ({mais_retificados['RETIFICADOS']})<br><br>"
+            
+            texto_ranking += "<b><u>Mais Remarcações:</u></b><br>"
+            texto_ranking += f"{mais_remarcados['NOME']} ({mais_remarcados['REMARCADOS']})<br><br>"
+
+            texto_ranking += "<b><u>Mais Erros:</u></b><br>"
+            texto_ranking += f"{mais_erros['NOME']} ({mais_erros['ERROS']})<br><hr>"
+
+            texto_ranking += "<b><u>Menos Retificações</u> (acima de 0):</b><br>"
+            texto_ranking += f"{menos_retificados['NOME']} ({menos_retificados['RETIFICADOS']})" if menos_retificados else "N/A"
+            texto_ranking += "<br><br>"
+            
+            texto_ranking += "<b><u>Menos Remarcações</u> (acima de 0):</b><br>"
+            texto_ranking += f"{menos_remarcados['NOME']} ({menos_remarcados['REMARCADOS']})" if menos_remarcados else "N/A"
+            texto_ranking += "<br><br>"
+
+            texto_ranking += "<b><u>Menos Erros</u> (acima de 0):</b><br>"
+            texto_ranking += f"{menos_erros['NOME']} ({menos_erros['ERROS']})" if menos_erros else "N/A"
+            texto_ranking += "<br>"
+            
+        self.resultado_ranking_label.setText(texto_ranking)
+
 class JanelaClientes(QDialog):
     def __init__(self, usuario_logado, parent=None):
         super().__init__(parent)
@@ -292,6 +503,8 @@ class JanelaClientes(QDialog):
         self.setWindowTitle("Gerenciamento de Clientes")
         self.setMinimumSize(800, 600)
         layout = QVBoxLayout(self)
+        
+        # --- Layout de Busca (sem alterações) ---
         busca_layout = QHBoxLayout()
         busca_label = QLabel("Buscar Cliente:")
         self.busca_edit = QLineEdit()
@@ -299,6 +512,8 @@ class JanelaClientes(QDialog):
         busca_layout.addWidget(busca_label)
         busca_layout.addWidget(self.busca_edit)
         layout.addLayout(busca_layout)
+        
+        # --- Tabela de Clientes (sem alterações) ---
         self.tabela_clientes = QTableWidget()
         self.tabela_clientes.setColumnCount(4)
         self.tabela_clientes.setHorizontalHeaderLabels(["Nome", "Tipo de Envio", "Email/Local", "Nível"])
@@ -306,25 +521,37 @@ class JanelaClientes(QDialog):
         self.tabela_clientes.setSelectionBehavior(QTableWidget.SelectRows)
         self.tabela_clientes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.tabela_clientes)
+        
+        # --- INÍCIO DA CORREÇÃO ---
+        # Bloco único e corrigido para os botões
         botoes_layout = QHBoxLayout()
         import_btn = QPushButton("Importar de XLSX")
         pendentes_btn = QPushButton("Verificar Pendentes no Mês")
+        inativos_btn = QPushButton("Verificar Inativos") # Novo botão adicionado aqui
         add_btn = QPushButton("Adicionar Novo")
         edit_btn = QPushButton("Editar Selecionado")
         del_btn = QPushButton("Excluir Selecionado")
+        
         botoes_layout.addWidget(import_btn)
         botoes_layout.addWidget(pendentes_btn)
+        botoes_layout.addWidget(inativos_btn) # Adicionado ao layout
         botoes_layout.addStretch()
         botoes_layout.addWidget(add_btn)
         botoes_layout.addWidget(edit_btn)
         botoes_layout.addWidget(del_btn)
+        
         layout.addLayout(botoes_layout)
+        
+        # Conexões dos sinais
         import_btn.clicked.connect(self.importar_clientes)
         add_btn.clicked.connect(self.adicionar_cliente)
         edit_btn.clicked.connect(self.editar_cliente)
         del_btn.clicked.connect(self.excluir_cliente)
         self.busca_edit.textChanged.connect(self.filtrar_tabela)
         pendentes_btn.clicked.connect(self.verificar_pendentes)
+        inativos_btn.clicked.connect(self.verificar_inativos) # Conexão para o novo botão
+        # --- FIM DA CORREÇÃO ---
+        
         self.carregar_clientes()
 
     def verificar_pendentes(self):
@@ -338,6 +565,18 @@ class JanelaClientes(QDialog):
             if cliente['ID'] not in ids_clientes_agendados:
                 clientes_pendentes.append(cliente['NOME'])
         dialog = DialogoClientesPendentes(clientes_pendentes, mes_atual, ano_atual, self)
+        dialog.exec_()
+
+    def verificar_inativos(self):
+        # Chama a nova função do banco de dados
+        lista_completa_clientes = database.get_status_de_atividade_clientes()
+
+        if not lista_completa_clientes:
+            QMessageBox.information(self, "Aviso", "Nenhum cliente encontrado no sistema.")
+            return
+            
+        # Cria e exibe o diálogo com a lista de clientes
+        dialog = DialogoClientesInativos(lista_completa_clientes, self)
         dialog.exec_()
 
     def filtrar_tabela(self):
@@ -443,6 +682,17 @@ class JanelaClientes(QDialog):
         if reply == QMessageBox.Yes: 
             database.deletar_cliente(cliente_data['ID'], self.usuario_logado['USERNAME'])
             self.carregar_clientes()
+
+    def keyPressEvent(self, event):
+        # Verifica se a tecla pressionada foi F3
+        if event.key() == Qt.Key_F3:
+            print("Tecla F3 pressionada, abrindo estatísticas...")
+            dialog = DialogoEstatisticasCliente(self)
+            dialog.exec_()
+        else:
+            # Passa o evento para o tratamento padrão para outras teclas
+            super().keyPressEvent(event)
+
 
 
 class FormularioStatusDialog(QDialog):
@@ -819,6 +1069,55 @@ class DayViewDialog(QDialog):
             self.carregar_agenda_dia()
             self.parent().populate_calendar()
 
+
+class DialogoResultadosBusca(QDialog):
+    def __init__(self, resultados, usuario_logado, parent=None):
+        super().__init__(parent)
+        self.usuario_logado = usuario_logado
+        self.setWindowTitle("Resultados da Busca")
+        self.setMinimumSize(800, 500)
+
+        layout = QVBoxLayout(self)
+        self.tabela_resultados = QTableWidget()
+        self.tabela_resultados.setColumnCount(5)
+        self.tabela_resultados.setHorizontalHeaderLabels(["Data", "Horário", "Cliente", "Status", "Responsável"])
+        self.tabela_resultados.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabela_resultados.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabela_resultados.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabela_resultados.setSortingEnabled(True) # Habilita a ordenação por coluna
+
+        layout.addWidget(QLabel("Clique duplo em uma linha para abrir o dia do agendamento."))
+        layout.addWidget(self.tabela_resultados)
+
+        self.popular_tabela(resultados)
+
+        self.tabela_resultados.cellDoubleClicked.connect(self.abrir_agendamento)
+
+    def popular_tabela(self, resultados):
+        self.tabela_resultados.setRowCount(len(resultados))
+        for i, res in enumerate(resultados):
+            # Converte a data do DB para o formato dd/MM/yyyy para exibição
+            data_obj = QDate.fromString(str(res['DATA_VENCIMENTO']), 'yyyy-MM-dd')
+            item_data = QTableWidgetItem(data_obj.toString('dd/MM/yyyy'))
+            
+            # Armazena a data original para a funcionalidade de clique duplo
+            item_data.setData(Qt.UserRole, res)
+
+            self.tabela_resultados.setItem(i, 0, item_data)
+            self.tabela_resultados.setItem(i, 1, QTableWidgetItem(res.get('HORARIO', '')))
+            self.tabela_resultados.setItem(i, 2, QTableWidgetItem(res.get('NOME_CLIENTE', '')))
+            self.tabela_resultados.setItem(i, 3, QTableWidgetItem(res.get('NOME_STATUS', 'N/A')))
+            self.tabela_resultados.setItem(i, 4, QTableWidgetItem(res.get('RESPONSAVEL', '')))
+
+    def abrir_agendamento(self, row, column):
+        item_selecionado = self.tabela_resultados.item(row, 0)
+        dados_agendamento = item_selecionado.data(Qt.UserRole)
+        
+        data_do_agendamento = QDate.fromString(str(dados_agendamento['DATA_VENCIMENTO']), 'yyyy-MM-dd')
+
+        # Abre a janela do dia correspondente
+        dialog = DayViewDialog(data_do_agendamento, self.usuario_logado, self.parent())
+        dialog.exec_()
 
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -1473,6 +1772,30 @@ class CalendarWindow(QMainWindow):
         self.calendar_grid = QGridLayout()
         self.calendar_grid.setSpacing(0)
         self.main_layout.addLayout(self.calendar_grid)
+        
+        # Layout para a busca global
+        busca_layout = QHBoxLayout()
+        busca_layout.addWidget(QLabel("<b>Busca Rápida:</b>"))
+        self.busca_global_edit = QLineEdit()
+        self.busca_global_edit.setPlaceholderText("Digite o nome do cliente, responsável ou observação...")
+        
+        # --- INÍCIO DA NOVA IMPLEMENTAÇÃO ---
+        self.completer = QCompleter(self)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive) # Não diferencia maiúsculas/minúsculas
+        self.completer.setFilterMode(Qt.MatchContains)      # Sugere se o texto digitado estiver em qualquer parte do nome
+        self.busca_global_edit.setCompleter(self.completer)
+        self._atualizar_completer_busca() # Chama o método para carregar os nomes
+        # --- FIM DA NOVA IMPLEMENTAÇÃO ---
+
+        self.busca_global_btn = QPushButton("Buscar")
+        busca_layout.addWidget(self.busca_global_edit)
+        busca_layout.addWidget(self.busca_global_btn)
+        self.main_layout.addLayout(busca_layout)
+
+        # Conecta o sinal do botão e a tecla Enter no campo de texto
+        self.busca_global_btn.clicked.connect(self.realizar_busca_global)
+        self.busca_global_edit.returnPressed.connect(self.realizar_busca_global)
+        
         action_layout = QHBoxLayout()
         config_btn = QPushButton("Configurações"); config_btn.clicked.connect(self.abrir_configuracoes)
         clientes_btn = QPushButton("Gerenciar Clientes"); clientes_btn.clicked.connect(self.gerenciar_clientes)
@@ -1482,6 +1805,34 @@ class CalendarWindow(QMainWindow):
         action_layout.addWidget(config_btn); action_layout.addStretch(); action_layout.addWidget(clientes_btn)
         action_layout.addWidget(status_btn); action_layout.addWidget(usuarios_btn); action_layout.addWidget(relatorio_btn)
         self.main_layout.addLayout(action_layout)
+
+    def _atualizar_completer_busca(self):
+    
+        try:
+            clientes = database.listar_clientes()
+            nomes_clientes = [cliente['NOME'] for cliente in clientes if cliente.get('NOME')]
+        
+            modelo = QStringListModel()
+            modelo.setStringList(nomes_clientes)
+            self.completer.setModel(modelo)
+            print("✅ Modelo do auto-complete atualizado com sucesso.")
+        except Exception as e:
+            print(f"⚠️ Erro ao atualizar o auto-complete: {e}")
+
+    def realizar_busca_global(self):
+        termo = self.busca_global_edit.text().strip()
+        if not termo:
+            QMessageBox.warning(self, "Busca Inválida", "Por favor, digite algo para buscar.")
+            return
+
+        resultados = database.buscar_agendamentos_globais(termo)
+
+        if not resultados:
+            QMessageBox.information(self, "Nenhum Resultado", f"Nenhum agendamento encontrado para o termo '{termo}'.")
+        else:
+            # Passa a janela principal (self) como pai para o diálogo
+            dialog = DialogoResultadosBusca(resultados, self.usuario_atual, self)
+            dialog.exec_()    
 
     def verificar_atualizacao(self):
         self.update_thread = UpdateCheckerThread()
@@ -1574,6 +1925,7 @@ class CalendarWindow(QMainWindow):
     def gerenciar_clientes(self):
         dialog = JanelaClientes(self.usuario_atual, self); dialog.exec_()
         self.populate_calendar()
+        self._atualizar_completer_busca()
 
     def manage_status(self):
         dialog = StatusDialog(self.usuario_atual, self); dialog.exec_()

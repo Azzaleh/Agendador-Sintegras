@@ -122,7 +122,7 @@ def iniciar_db():
         criar_generator_e_trigger(cur, 'CLIENTES')
     if not tabela_existe(cur, 'ENTREGAS'):
         # ADICIONADO O CAMPO IS_RETIFICACAO
-        cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(50), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
+        cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(150), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
 
     else:
@@ -136,7 +136,9 @@ def iniciar_db():
                 cur.execute("ALTER TABLE ENTREGAS ADD IS_RETIFICACAO SMALLINT DEFAULT 0;")
                 conn.commit()
         except Exception as e:
-            print(f"⚠️ Erro ao verificar/adicionar campo IS_RETIFICACAO: {e}")    
+            print(f"⚠️ Erro ao verificar/adicionar campo IS_RETIFICACAO: {e}")   
+
+
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
         criar_generator_e_trigger(cur, 'LOGS')
@@ -605,6 +607,124 @@ def get_estatisticas_por_usuario_e_status():
         conn = conectar()
         cur = conn.cursor()
         cur.execute(sql)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def buscar_agendamentos_globais(termo_busca):
+    """
+    Busca agendamentos em todo o banco de dados com base em um termo.
+    A busca é case-insensitive e procura no nome do cliente, responsável e observações.
+    """
+    sql = """
+        SELECT
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.RESPONSAVEL,
+            c.NOME as NOME_CLIENTE,
+            s.NOME as NOME_STATUS
+        FROM ENTREGAS e
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE
+            UPPER(c.NOME) LIKE ? OR
+            UPPER(e.RESPONSAVEL) LIKE ? OR
+            UPPER(e.OBSERVACOES) LIKE ?
+        ORDER BY e.DATA_VENCIMENTO DESC
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        # Adiciona os wildcards '%' para buscar o termo em qualquer parte do texto
+        termo_like = f"%{termo_busca.upper()}%"
+        cur.execute(sql, (termo_like, termo_like, termo_like))
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def get_status_de_atividade_clientes():
+    """
+    Busca todos os clientes e a data do último agendamento de cada um.
+    Retorna uma lista de dicionários contendo o nome do cliente, contato,
+    e a data do último agendamento (ou None se nunca agendou).
+    """
+    sql = """
+        SELECT
+            c.ID,
+            c.NOME,
+            c.CONTATO,
+            MAX(e.DATA_VENCIMENTO) as ULTIMO_AGENDAMENTO
+        FROM
+            CLIENTES c
+        LEFT JOIN
+            ENTREGAS e ON c.ID = e.CLIENTE_ID
+        GROUP BY
+            c.ID, c.NOME, c.CONTATO
+        ORDER BY
+            ULTIMO_AGENDAMENTO ASC, c.NOME ASC
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+
+def get_estatisticas_cliente_periodo(cliente_id, data_inicio, data_fim):
+    """
+    Retorna a contagem de cada status para um cliente específico em um período.
+    """
+    sql = """
+        SELECT
+            s.NOME,
+            COUNT(e.ID) as CONTAGEM
+        FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.CLIENTE_ID = ? AND e.DATA_VENCIMENTO BETWEEN ? AND ?
+        GROUP BY s.NOME
+        ORDER BY CONTAGEM DESC
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (cliente_id, data_inicio, data_fim))
+        # Transforma o resultado em um dicionário: {'Status': contagem}
+        return {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        if conn: conn.close()
+
+
+def get_dados_ranking_clientes_periodo(data_inicio, data_fim):
+    """
+    Calcula as contagens de status chave para TODOS os clientes em um período,
+    para ser usado na montagem dos rankings.
+    """
+    sql = """
+        SELECT
+            c.NOME,
+            SUM(CASE WHEN s.NOME IN ('Feito', 'Feito e enviado') THEN 1 ELSE 0 END) as CONCLUIDOS,
+            SUM(CASE WHEN s.NOME = 'Retificado' THEN 1 ELSE 0 END) as RETIFICADOS,
+            SUM(CASE WHEN s.NOME = 'Remarcado' THEN 1 ELSE 0 END) as REMARCADOS, -- <-- MUDANÇA AQUI
+            SUM(CASE WHEN s.NOME = 'Houve Algum Erro' THEN 1 ELSE 0 END) as ERROS
+        FROM
+            CLIENTES c
+        JOIN
+            ENTREGAS e ON c.ID = e.CLIENTE_ID
+        JOIN
+            STATUS s ON e.STATUS_ID = s.ID
+        WHERE
+            e.DATA_VENCIMENTO BETWEEN ? AND ?
+        GROUP BY
+            c.NOME
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data_inicio, data_fim))
         return [dict_factory(cur, row) for row in cur.fetchall()]
     finally:
         if conn: conn.close()
