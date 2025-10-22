@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QV
                              QFileDialog, QFormLayout, QCheckBox, QTextEdit, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QColorDialog, QSystemTrayIcon, QStyle,
                              QTimeEdit, QSpinBox, QRadioButton, QGroupBox, QDateEdit, QListWidget, 
-                             QListWidgetItem, QMenu, QTreeWidget, QTreeWidgetItem, QToolTip,QCompleter)
+                             QListWidgetItem, QMenu, QTreeWidget, QTreeWidgetItem, QToolTip,QCompleter,QTextBrowser)
 from PyQt5.QtGui import QPainter, QColor, QBrush, QFont, QIcon
 from PyQt5.QtCore import Qt, QDate, pyqtSignal, QTimer, QTime, QSettings,QThread,QStringListModel
 
@@ -289,6 +289,12 @@ class DialogoClientesPendentes(QDialog):
         titulo_label = QLabel(f"<b>Clientes com agendamentos pendentes para {mes}/{ano}:</b>")
         titulo_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(titulo_label)
+
+        total_pendentes = len(lista_clientes)
+        total_label = QLabel(f"<b>Total de clientes pendentes: {total_pendentes}</b>")
+        total_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(total_label)
+
         if not lista_clientes:
             aviso_label = QLabel("Nenhum cliente pendente encontrado.\nTodos foram agendados este mês!")
             aviso_label.setAlignment(Qt.AlignCenter)
@@ -627,13 +633,17 @@ class JanelaClientes(QDialog):
         if not caminho_arquivo: return
         try:
             df = pd.read_excel(caminho_arquivo)
+            
             mapa_colunas = { 
                 'Clientes': 'nome', 'Envia do nosso ou deles?': 'tipo_envio', 
                 'Email da contabilidade (Ou local a ser deixado)': 'contato', 
                 'Gera Recibo?': 'gera_recibo', 'Contar XMLs?': 'conta_xmls', 
                 'Nível': 'nivel', 'Outros detalhes': 'detalhes',
-                'Nº de Computadores': 'numero_computadores'
+                'Nº de Computadores': 'numero_computadores',
+                'Telefone 1': 'telefone1',
+                'Telefone 2': 'telefone2'
             }
+
             colunas_obrigatorias = ['Clientes', 'Envia do nosso ou deles?', 'Email da contabilidade (Ou local a ser deixado)']
             if not all(col in df.columns for col in colunas_obrigatorias):
                 QMessageBox.critical(self, "Erro de Importação", f"O arquivo deve conter as colunas obrigatórias: {', '.join(colunas_obrigatorias)}"); return
@@ -655,19 +665,29 @@ class JanelaClientes(QDialog):
                         dados_cliente[col_db] = None
                 
                 if dados_cliente.get('nome') and dados_cliente.get('tipo_envio') and dados_cliente.get('contato'):
+                    # --- INÍCIO DA CORREÇÃO ---
+                    # Pega o valor lido da planilha
+                    num_pc = dados_cliente.get('numero_computadores')
+                    
+                    # Se o valor for None (célula vazia), define um padrão.
+                    if num_pc is None:
+                        num_pc = 1
+                    
                     database.adicionar_cliente(
                         nome=dados_cliente['nome'], tipo_envio=dados_cliente['tipo_envio'], 
                         contato=dados_cliente['contato'], gera_recibo=dados_cliente.get('gera_recibo', False), 
                         conta_xmls=dados_cliente.get('conta_xmls', False), nivel=dados_cliente.get('nivel'), 
                         detalhes=dados_cliente.get('detalhes'),
-                        numero_computadores=dados_cliente.get('numero_computadores', 0),
+                        numero_computadores=int(float(num_pc)), # Agora é seguro converter para int
+                        telefone1=dados_cliente.get('telefone1'),
+                        telefone2=dados_cliente.get('telefone2'),
                         usuario_logado=usuario_nome
                     )
+                    # --- FIM DA CORREÇÃO ---
                     clientes_importados += 1
             QMessageBox.information(self, "Sucesso", f"{clientes_importados} clientes importados com sucesso!"); self.carregar_clientes()
         except Exception as e: 
             QMessageBox.critical(self, "Erro de Importação", f"Ocorreu um erro ao ler o arquivo:\n{e}")
-
     def carregar_clientes(self):
         self.tabela_clientes.setRowCount(0)
         for cliente in database.listar_clientes():
@@ -858,7 +878,7 @@ class EntregaDialog(QDialog):
         self.date = date
         self.cliente_selecionado_data = None # Armazena dados do cliente atual
 
-        self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
+        self.setWindowTitle("Agendar Novo Sintegra" if not entrega_data else "Editar Agendamento")
         layout = QFormLayout(self)
 
         self.cliente_combo = QComboBox()
@@ -909,6 +929,7 @@ class EntregaDialog(QDialog):
             self.observacoes_edit.setText(entrega_data.get('OBSERVACOES', ''))
             self.retificacao_check.setChecked(bool(entrega_data.get('IS_RETIFICACAO', 0)))
         else:
+            self.cliente_combo.setCurrentIndex(-1)
             index_pendente = self.status_combo.findText("Pendente") 
             if index_pendente > -1: self.status_combo.setCurrentIndex(index_pendente)
             
@@ -1492,6 +1513,100 @@ class RelatorioDialog(QDialog):
                     export.exportar_logs_csv(dados, nome_arquivo)
         self.accept()
 
+# main.py - Adicione esta classe inteira no seu arquivo
+
+class DialogoSobre(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sobre o Agendador de Sintegras")
+        self.setMinimumSize(800, 650)
+
+        layout = QVBoxLayout(self)
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(True) # Para futuros links
+        layout.addWidget(self.browser)
+
+        # --- CONTEÚDO DA DOCUMENTAÇÃO ---
+        # Usamos HTML para formatar o texto
+        documentacao_html = f"""
+            <h1>Agendador de Sintegras - Versão {VERSAO_ATUAL}</h1>
+            <p>Este é um guia completo sobre como utilizar todas as funcionalidades do sistema.</p>
+            <hr>
+
+            <h2>Tela Principal (Calendário)</h2>
+            <ul>
+                <li><b>Visualização:</b> A tela principal mostra o calendário do mês. Cada dia exibe a contagem de agendamentos e uma cor baseada no status do primeiro agendamento do dia.</li>
+                <li><b>Cores dos Dias:</b>
+                    <ul>
+                        <li><b>Verde:</b> Dia normal sem agendamentos.</li>
+                        <li><b>Laranja:</b> Fim de semana.</li>
+                        <li><b>Roxo:</b> Feriado.</li>
+                        <li><b>Outras cores:</b> Indicam que há agendamentos, com a cor do status predominante.</li>
+                    </ul>
+                </li>
+                <li><b>Interação:</b>
+                    <ul>
+                        <li><b>Clique Duplo:</b> Abre a visão detalhada da agenda daquele dia.</li>
+                        <li><b>Clique Direito:</b> Permite marcar ou desmarcar um dia como feriado.</li>
+                    </ul>
+                </li>
+                <li><b>Dashboard:</b> O painel no topo exibe estatísticas rápidas do mês atual, como a porcentagem de clientes atendidos e o total de retificações.</li>
+            </ul>
+            <hr>
+
+            <h2>Agendamentos</h2>
+            <p>Na janela de um dia específico (aberta com clique duplo), você pode gerenciar os agendamentos hora a hora.</p>
+            <ul>
+                <li><b>Criar:</b> Dê um clique duplo em um horário vago para abrir a janela de criação de agendamento.</li>
+                <li><b>Editar:</b> Selecione um agendamento existente e clique em "Editar" (ou dê um clique duplo nele).</li>
+                <li><b>Campos:</b>
+                    <ul>
+                        <li><b>Cliente:</b> Comece a digitar o nome para filtrar e selecionar. O campo inicia vazio por padrão.</li>
+                        <li><b>Status:</b> Define o estado atual do agendamento (Pendente, Feito, etc.).</li>
+                        <li><b>Responsável:</b> Preenchido automaticamente com o seu usuário e não pode ser alterado.</li>
+                        <li><b>Ações:</b> Use os botões "Copiar Email/Local" e "Copiar Rascunho" para agilizar seu trabalho.</li>
+                    </ul>
+                </li>
+            </ul>
+            <hr>
+
+            <h2>Gerenciamento de Clientes</h2>
+            <p>Acessível pelo botão "Gerenciar Clientes" na tela principal.</p>
+            <ul>
+                <li><b>Adicionar/Editar/Excluir:</b> Funções padrão para gerenciar sua base de clientes.</li>
+                <li><b>Telefones:</b> É possível cadastrar até 2 telefones por cliente no formato (xx) xxxxx-xxxx.</li>
+                <li><b>Verificar Pendentes:</b> Mostra uma lista de todos os clientes que ainda não tiveram um agendamento no mês atual.</li>
+                <li><b>Verificar Inativos:</b> Gera um relatório de clientes que não agendam há 3 meses ou mais.</li>
+                <li><b>Importar de XLSX:</b> Permite importar uma lista de clientes a partir de uma planilha Excel.</li>
+            </ul>
+            <hr>
+            
+            <h2>Outras Funcionalidades</h2>
+            <ul>
+                <li><b>Busca Rápida:</b> A barra de busca na parte inferior da tela principal permite encontrar agendamentos por nome de cliente, responsável ou palavras nas observações.</li>
+                <li><b>Gerenciar Status:</b> Permite criar, editar ou excluir os status de agendamento e suas cores correspondentes.</li>
+                <li><b>Gerar Relatório:</b> Permite exportar relatórios detalhados de agendamentos ou logs de atividade (quem fez o quê) para PDF ou CSV.</li>
+                <li><b>Configurações:</b> Permite ajustar as configurações de conexão do banco de dados (local ou remoto) e os horários de trabalho. O acesso é protegido pela senha do usuário 'admin'.</li>
+            </ul>
+            <hr>
+            
+            <h2>Atalhos de Teclado</h2>
+            <ul>
+                <li><b>F3 (na janela de Clientes):</b> Abre a tela de análise de performance de clientes, com estatísticas e rankings.</li>
+            </ul>
+        """
+        self.browser.setHtml(documentacao_html)
+
+        # --- Botão de Fechar ---
+        botoes_layout = QHBoxLayout()
+        fechar_btn = QPushButton("Fechar")
+        fechar_btn.clicked.connect(self.accept)
+        botoes_layout.addStretch()
+        botoes_layout.addWidget(fechar_btn)
+        botoes_layout.addStretch()
+        layout.addLayout(botoes_layout)
+
 class DialogoUsuario(QDialog):
     def __init__(self, parent=None, usuario=None):
         super().__init__(parent)
@@ -1793,79 +1908,96 @@ class CalendarWindow(QMainWindow):
         self._atualizar_sugestoes()
 
     def setup_ui(self):
-        nav_layout = QHBoxLayout()
-        prev_btn = QPushButton("< Mês Anterior")
-        self.month_label = QLabel()
-        self.month_label.setAlignment(Qt.AlignCenter)
-        next_btn = QPushButton("Próximo Mês >")
-        prev_btn.clicked.connect(self.prev_month)
-        next_btn.clicked.connect(self.next_month)
-        nav_layout.addWidget(prev_btn)
-        nav_layout.addWidget(self.month_label)
-        nav_layout.addWidget(next_btn)
-        self.main_layout.addLayout(nav_layout)
-        info_panel_layout = QHBoxLayout()
-        sugestoes_group = QGroupBox("Sugestões de Agendamento")
-        sugestoes_layout = QVBoxLayout(sugestoes_group)
-        
-        self.sugestoes_label = SuggestionLabel("Buscando horários...")
-        
-        self.sugestoes_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        sugestoes_layout.addWidget(self.sugestoes_label)
-        sugestoes_layout.addStretch(1)
-        sugestoes_group.setFixedWidth(300)
-        self.dashboard_label = QLabel()
-        self.dashboard_label.setAlignment(Qt.AlignCenter)
-        self.dashboard_label.setStyleSheet("padding-bottom: 15px;")
-        spacer_widget = QWidget()
-        spacer_widget.setFixedWidth(300)
-        info_panel_layout.addWidget(sugestoes_group, 0, Qt.AlignBottom)
-        info_panel_layout.addStretch(1)
-        info_panel_layout.addWidget(self.dashboard_label, 0, Qt.AlignVCenter)
-        info_panel_layout.addStretch(1)
-        info_panel_layout.addWidget(spacer_widget, 0, Qt.AlignBottom)
-        self.main_layout.addLayout(info_panel_layout)
-        header_layout = QGridLayout()
-        dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
-        for i, dia in enumerate(dias):
-            header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
-        self.main_layout.addLayout(header_layout)
-        self.calendar_grid = QGridLayout()
-        self.calendar_grid.setSpacing(0)
-        self.main_layout.addLayout(self.calendar_grid)
-        
-        # Layout para a busca global
-        busca_layout = QHBoxLayout()
-        busca_layout.addWidget(QLabel("<b>Busca Rápida:</b>"))
-        self.busca_global_edit = QLineEdit()
-        self.busca_global_edit.setPlaceholderText("Digite o nome do cliente, responsável ou observação...")
-        
-        # --- INÍCIO DA NOVA IMPLEMENTAÇÃO ---
-        self.completer = QCompleter(self)
-        self.completer.setCaseSensitivity(Qt.CaseInsensitive) # Não diferencia maiúsculas/minúsculas
-        self.completer.setFilterMode(Qt.MatchContains)      # Sugere se o texto digitado estiver em qualquer parte do nome
-        self.busca_global_edit.setCompleter(self.completer)
-        self._atualizar_completer_busca() # Chama o método para carregar os nomes
-        # --- FIM DA NOVA IMPLEMENTAÇÃO ---
+            nav_layout = QHBoxLayout()
+            prev_btn = QPushButton("< Mês Anterior")
+            self.month_label = QLabel()
+            self.month_label.setAlignment(Qt.AlignCenter)
+            next_btn = QPushButton("Próximo Mês >")
+            prev_btn.clicked.connect(self.prev_month)
+            next_btn.clicked.connect(self.next_month)
+            nav_layout.addWidget(prev_btn)
+            nav_layout.addWidget(self.month_label)
+            nav_layout.addWidget(next_btn)
+            self.main_layout.addLayout(nav_layout)
+            info_panel_layout = QHBoxLayout()
+            sugestoes_group = QGroupBox("Sugestões de Agendamento")
+            sugestoes_layout = QVBoxLayout(sugestoes_group)
+            
+            self.sugestoes_label = SuggestionLabel("Buscando horários...")
+            
+            self.sugestoes_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            sugestoes_layout.addWidget(self.sugestoes_label)
+            sugestoes_layout.addStretch(1)
+            sugestoes_group.setFixedWidth(300)
+            self.dashboard_label = QLabel()
+            self.dashboard_label.setAlignment(Qt.AlignCenter)
+            self.dashboard_label.setStyleSheet("padding-bottom: 15px;")
+            spacer_widget = QWidget()
+            spacer_widget.setFixedWidth(300)
+            info_panel_layout.addWidget(sugestoes_group, 0, Qt.AlignBottom)
+            info_panel_layout.addStretch(1)
+            info_panel_layout.addWidget(self.dashboard_label, 0, Qt.AlignVCenter)
+            info_panel_layout.addStretch(1)
+            info_panel_layout.addWidget(spacer_widget, 0, Qt.AlignBottom)
+            self.main_layout.addLayout(info_panel_layout)
+            header_layout = QGridLayout()
+            dias = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+            for i, dia in enumerate(dias):
+                header_layout.addWidget(QLabel(f"<b>{dia}</b>", alignment=Qt.AlignCenter), 0, i)
+            self.main_layout.addLayout(header_layout)
+            self.calendar_grid = QGridLayout()
+            self.calendar_grid.setSpacing(0)
+            self.main_layout.addLayout(self.calendar_grid)
+            
+            busca_layout = QHBoxLayout()
+            busca_layout.addWidget(QLabel("<b>Busca Rápida:</b>"))
+            self.busca_global_edit = QLineEdit()
+            self.busca_global_edit.setPlaceholderText("Digite o nome do cliente, responsável ou observação...")
+            
+            self.completer = QCompleter(self)
+            self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+            self.completer.setFilterMode(Qt.MatchContains)
+            self.busca_global_edit.setCompleter(self.completer)
+            self._atualizar_completer_busca()
 
-        self.busca_global_btn = QPushButton("Buscar")
-        busca_layout.addWidget(self.busca_global_edit)
-        busca_layout.addWidget(self.busca_global_btn)
-        self.main_layout.addLayout(busca_layout)
+            self.busca_global_btn = QPushButton("Buscar")
+            busca_layout.addWidget(self.busca_global_edit)
+            busca_layout.addWidget(self.busca_global_btn)
+            self.main_layout.addLayout(busca_layout)
 
-        # Conecta o sinal do botão e a tecla Enter no campo de texto
-        self.busca_global_btn.clicked.connect(self.realizar_busca_global)
-        self.busca_global_edit.returnPressed.connect(self.realizar_busca_global)
-        
-        action_layout = QHBoxLayout()
-        config_btn = QPushButton("Configurações"); config_btn.clicked.connect(self.abrir_configuracoes)
-        clientes_btn = QPushButton("Gerenciar Clientes"); clientes_btn.clicked.connect(self.gerenciar_clientes)
-        status_btn = QPushButton("Gerenciar Status"); status_btn.clicked.connect(self.manage_status)
-        usuarios_btn = QPushButton("Gerenciar Usuários"); usuarios_btn.clicked.connect(self.gerenciar_usuarios)
-        relatorio_btn = QPushButton("Gerar Relatório"); relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
-        action_layout.addWidget(config_btn); action_layout.addStretch(); action_layout.addWidget(clientes_btn)
-        action_layout.addWidget(status_btn); action_layout.addWidget(usuarios_btn); action_layout.addWidget(relatorio_btn)
-        self.main_layout.addLayout(action_layout)
+            self.busca_global_btn.clicked.connect(self.realizar_busca_global)
+            self.busca_global_edit.returnPressed.connect(self.realizar_busca_global)
+            
+            # --- INÍCIO DA CORREÇÃO ---
+            action_layout = QHBoxLayout()
+            config_btn = QPushButton("Configurações")
+            config_btn.clicked.connect(self.abrir_configuracoes)
+            
+            sobre_btn = QPushButton("Sobre")
+            sobre_btn.clicked.connect(self.abrir_dialogo_sobre)
+            
+            clientes_btn = QPushButton("Gerenciar Clientes")
+            clientes_btn.clicked.connect(self.gerenciar_clientes)
+            
+            status_btn = QPushButton("Gerenciar Status")
+            status_btn.clicked.connect(self.manage_status)
+            
+            usuarios_btn = QPushButton("Gerenciar Usuários")
+            usuarios_btn.clicked.connect(self.gerenciar_usuarios)
+            
+            relatorio_btn = QPushButton("Gerar Relatório")
+            relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
+            
+            # Adicionando os botões na ordem correta
+            action_layout.addWidget(config_btn)
+            action_layout.addWidget(sobre_btn) # Botão "Sobre" adicionado aqui
+            action_layout.addStretch() 
+            action_layout.addWidget(clientes_btn)
+            action_layout.addWidget(status_btn)
+            action_layout.addWidget(usuarios_btn)
+            action_layout.addWidget(relatorio_btn)
+            
+            self.main_layout.addLayout(action_layout)
 
     def _atualizar_completer_busca(self):
     
@@ -2008,6 +2140,11 @@ class CalendarWindow(QMainWindow):
 
     def gerenciar_usuarios(self):
         dialog = JanelaUsuarios(self.usuario_atual, self); dialog.exec_()
+
+    def abrir_dialogo_sobre(self):
+            """Abre a janela de documentação do sistema."""
+            dialog = DialogoSobre(self)
+            dialog.exec_()
 
 if __name__ == '__main__':
     QApplication.setOrganizationName("Data Servis")

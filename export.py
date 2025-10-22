@@ -41,13 +41,26 @@ def exportar_para_pdf(entregas, nome_arquivo, titulo_relatorio):
         story = []
         story.append(Paragraph(titulo_relatorio, styles['h1']))
         story.append(Spacer(1, 0.2 * inch))
+        
+        # O cabeçalho da tabela continua igual
         dados_tabela = [["Data", "Horário", "Cliente", "Status", "Responsável", "Contato"]]
+        
+        # --- INÍCIO DA CORREÇÃO ---
         for entrega in entregas:
+            # CORREÇÃO: Usar chaves em MAIÚSCULAS para corresponder ao que vem do banco
+            data_obj = entrega.get('DATA_VENCIMENTO') # <--- CORREÇÃO
+            data_str = data_obj.strftime('%d/%m/%Y') if data_obj else ''
+
             dados_tabela.append([
-                entrega.get('data_vencimento', ''), entrega.get('horario', ''),
-                entrega.get('nome_cliente', ''), entrega.get('nome_status', 'N/A'),
-                entrega.get('responsavel', ''), entrega.get('contato', '')
+                data_str, 
+                entrega.get('HORARIO', ''),          # <--- CORREÇÃO
+                entrega.get('NOME_CLIENTE', ''),     # <--- CORREÇÃO
+                entrega.get('NOME_STATUS', 'N/A'),   # <--- CORREÇÃO
+                entrega.get('RESPONSAVEL', ''),      # <--- CORREÇÃO
+                entrega.get('CONTATO', '')           # <--- CORREÇÃO
             ])
+        # --- FIM DA CORREÇÃO ---
+            
         tabela = Table(dados_tabela)
         estilo = TableStyle([
             ('BACKGROUND', (0,0), (-1,0), colors.grey), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
@@ -136,29 +149,26 @@ def exportar_logs_pdf(logs, nome_arquivo, titulo_relatorio):
         story = []
         story.append(Paragraph(titulo_relatorio, styles['h1']))
         story.append(Spacer(1, 0.2 * inch))
+        
         dados_tabela = [["Timestamp", "Usuário", "Ação", "Detalhes"]]
         
+        # --- INÍCIO DA CORREÇÃO ---
         for log in logs:
-            # --- INÍCIO DA CORREÇÃO ---
+            # CORREÇÃO: Usar as chaves em MAIÚSCULAS que vêm do banco de dados
+            data_objeto = log.get('DATA_HORA') # <--- CORREÇÃO
             
-            # 1. Pega o objeto datetime do log
-            data_objeto = log.get('data_hora')
-            
-            # 2. Converte o objeto para uma string formatada (ou string vazia se não existir)
             if data_objeto:
-                # Formata para o padrão brasileiro: Dia/Mês/Ano Hora:Minuto:Segundo
                 data_str = data_objeto.strftime('%d/%m/%Y %H:%M:%S')
             else:
                 data_str = ''
             
-            # 3. Adiciona a string formatada à tabela
             dados_tabela.append([
                 Paragraph(data_str, styles['BodyText']),
-                Paragraph(log.get('usuario_nome', ''), styles['BodyText']),
-                Paragraph(log.get('acao', ''), styles['BodyText']),
-                Paragraph(log.get('detalhes', ''), styles['BodyText'])
+                Paragraph(log.get('USUARIO_NOME', ''), styles['BodyText']), # <--- CORREÇÃO
+                Paragraph(log.get('ACAO', ''), styles['BodyText']),         # <--- CORREÇÃO
+                Paragraph(log.get('DETALHES', ''), styles['BodyText'])     # <--- CORREÇÃO
             ])
-            # --- FIM DA CORREÇÃO ---
+        # --- FIM DA CORREÇÃO ---
 
         tabela = Table(dados_tabela, colWidths=[1.8*inch, 1*inch, 1.5*inch, 3.2*inch])
         estilo = TableStyle([

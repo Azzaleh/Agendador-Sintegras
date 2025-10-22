@@ -84,17 +84,6 @@ def conectar():
         print(f"❌ Erro crítico ao conectar ao banco de dados: {e}")
         raise
     
-    try:
-        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'CLIENTES' AND RDB$FIELD_NAME = 'TELEFONE1'")
-        if cur.fetchone() is None:
-            print("🔧 Adicionando colunas de telefone na tabela CLIENTES...")
-            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE1 VARCHAR(20);")
-            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE2 VARCHAR(20);")
-            conn.commit()
-            print("✅ Colunas de telefone adicionadas com sucesso.")
-    except Exception as e:
-        print(f"ℹ️  Colunas de telefone já existiam ou não puderam ser criadas: {e}")
-
 def tabela_existe(cur, nome_tabela):
     cur.execute("SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = ?", (nome_tabela.upper(),))
     return cur.fetchone() is not None
@@ -129,14 +118,14 @@ def iniciar_db():
         cur.execute("CREATE TABLE STATUS (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(50) UNIQUE NOT NULL, COR_HEX VARCHAR(10) NOT NULL)")
         criar_generator_e_trigger(cur, 'STATUS')
     if not tabela_existe(cur, 'CLIENTES'):
+        # Modificação para VARCHAR(150) no nome para consistência
         cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
         criar_generator_e_trigger(cur, 'CLIENTES')
     if not tabela_existe(cur, 'ENTREGAS'):
-        # ADICIONADO O CAMPO IS_RETIFICACAO
         cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(150), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
 
-    else:
+    else: # Se a tabela ENTREGAS já existe, verifica se precisa adicionar a coluna
         try:
             cur.execute("""
                 SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS
@@ -149,6 +138,19 @@ def iniciar_db():
         except Exception as e:
             print(f"⚠️ Erro ao verificar/adicionar campo IS_RETIFICACAO: {e}")   
 
+    # --- INÍCIO DA CORREÇÃO ---
+    # Este é o local CORRETO para adicionar/verificar novas colunas
+    try:
+        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'CLIENTES' AND RDB$FIELD_NAME = 'TELEFONE1'")
+        if cur.fetchone() is None:
+            print("🔧 Adicionando colunas de telefone na tabela CLIENTES...")
+            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE1 VARCHAR(20);")
+            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE2 VARCHAR(20);")
+            conn.commit()
+            print("✅ Colunas de telefone adicionadas com sucesso.")
+    except Exception as e:
+        print(f"ℹ️  Colunas de telefone já existiam ou não puderam ser criadas: {e}")
+    # --- FIM DA CORREÇÃO ---
 
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
