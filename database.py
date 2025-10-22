@@ -83,6 +83,17 @@ def conectar():
     except fdb.Error as e:
         print(f"❌ Erro crítico ao conectar ao banco de dados: {e}")
         raise
+    
+    try:
+        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'CLIENTES' AND RDB$FIELD_NAME = 'TELEFONE1'")
+        if cur.fetchone() is None:
+            print("🔧 Adicionando colunas de telefone na tabela CLIENTES...")
+            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE1 VARCHAR(20);")
+            cur.execute("ALTER TABLE CLIENTES ADD TELEFONE2 VARCHAR(20);")
+            conn.commit()
+            print("✅ Colunas de telefone adicionadas com sucesso.")
+    except Exception as e:
+        print(f"ℹ️  Colunas de telefone já existiam ou não puderam ser criadas: {e}")
 
 def tabela_existe(cur, nome_tabela):
     cur.execute("SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = ?", (nome_tabela.upper(),))
@@ -308,25 +319,25 @@ def listar_clientes():
     finally:
         if conn: conn.close()
 
-def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
-    sql = "INSERT INTO CLIENTES (NOME, TIPO_ENVIO, CONTATO, GERA_RECIBO, CONTA_XMLS, NIVEL, OUTROS_DETALHES, NUMERO_COMPUTADORES) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+def adicionar_cliente(nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, telefone1, telefone2, usuario_logado):
+    sql = "INSERT INTO CLIENTES (NOME, TIPO_ENVIO, CONTATO, GERA_RECIBO, CONTA_XMLS, NIVEL, OUTROS_DETALHES, NUMERO_COMPUTADORES, TELEFONE1, TELEFONE2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores))
+        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores, telefone1, telefone2))
         conn.commit()
         registrar_log(usuario_logado, "CRIAR_CLIENTE", f"Cliente '{nome}' adicionado.")
     finally:
         if conn: conn.close()
 
-def atualizar_cliente(cliente_id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, usuario_logado):
-    sql = "UPDATE CLIENTES SET NOME=?, TIPO_ENVIO=?, CONTATO=?, GERA_RECIBO=?, CONTA_XMLS=?, NIVEL=?, OUTROS_DETALHES=?, NUMERO_COMPUTADORES=? WHERE ID=?"
+def atualizar_cliente(cliente_id, nome, tipo_envio, contato, gera_recibo, conta_xmls, nivel, detalhes, numero_computadores, telefone1, telefone2, usuario_logado):
+    sql = "UPDATE CLIENTES SET NOME=?, TIPO_ENVIO=?, CONTATO=?, GERA_RECIBO=?, CONTA_XMLS=?, NIVEL=?, OUTROS_DETALHES=?, NUMERO_COMPUTADORES=?, TELEFONE1=?, TELEFONE2=? WHERE ID=?"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores, cliente_id))
+        cur.execute(sql, (nome, tipo_envio, contato, 1 if gera_recibo else 0, 1 if conta_xmls else 0, nivel, detalhes, numero_computadores, telefone1, telefone2, cliente_id))
         conn.commit()
         registrar_log(usuario_logado, "ATUALIZAR_CLIENTE", f"Cliente '{nome}' (ID: {cliente_id}) atualizado.")
     finally:
@@ -575,7 +586,8 @@ def get_entregas_filtradas(data_inicio, data_fim, status_ids):
         if conn: conn.close()
 
 def get_logs_filtrados(data_inicio, data_fim, usuario):
-    base_sql = "SELECT DATAHORA as timestamp, USUARIO_NOME as usuario_nome, ACAO as acao, DETALHES as detalhes FROM LOGS WHERE DATAHORA BETWEEN ? AND ?"
+    # A MUDANÇA ESTÁ AQUI: Usamos CAST(DATAHORA AS DATE) para comparar apenas as datas
+    base_sql = "SELECT DATAHORA as data_hora, USUARIO_NOME as usuario_nome, ACAO as acao, DETALHES as detalhes FROM LOGS WHERE CAST(DATAHORA AS DATE) BETWEEN ? AND ?"
     params = [data_inicio, data_fim]
     if usuario != "Todos":
         base_sql += " AND USUARIO_NOME = ?"
@@ -726,5 +738,16 @@ def get_dados_ranking_clientes_periodo(data_inicio, data_fim):
         cur = conn.cursor()
         cur.execute(sql, (data_inicio, data_fim))
         return [dict_factory(cur, row) for row in cur.fetchall()]
+    finally:
+        if conn: conn.close()
+
+def get_cliente_por_id(cliente_id):
+    sql = "SELECT * FROM CLIENTES WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (cliente_id,))
+        return dict_factory(cur, cur.fetchone())
     finally:
         if conn: conn.close()

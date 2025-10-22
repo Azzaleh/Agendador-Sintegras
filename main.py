@@ -198,26 +198,42 @@ class DialogoCliente(QDialog):
         self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
+        
+        # --- INÍCIO DA ALTERAÇÃO ---
         self.nome_edit = QLineEdit()
         self.tipo_envio_combo = QComboBox()
         self.tipo_envio_combo.addItems(["Nosso", "Deles"])
-        self.contato_edit = QLineEdit()
+        self.contato_edit = QLineEdit() # Email/Local
+        
+        # Novos campos de telefone com máscara de entrada
+        self.telefone1_edit = QLineEdit()
+        self.telefone1_edit.setInputMask("(00) 00000-0000")
+        self.telefone2_edit = QLineEdit()
+        self.telefone2_edit.setInputMask("(00) 00000-0000")
+
         self.gera_recibo_check = QCheckBox("Gera Recibo?")
         self.conta_xmls_check = QCheckBox("Contar XMLs?")
         self.nivel_edit = QLineEdit()
         self.detalhes_edit = QTextEdit()
         self.detalhes_edit.setPlaceholderText("Detalhes adicionais sobre o cliente...")
+        self.detalhes_edit.setFixedHeight(80) # Diminui a altura da caixa de observações
+
         self.num_computadores_spin = QSpinBox()
         self.num_computadores_spin.setRange(1, 9999)
         self.num_computadores_spin.setValue(1)
-        form_layout.addRow("Nº de Computadores:", self.num_computadores_spin)
+        
         form_layout.addRow("Nome*:", self.nome_edit)
         form_layout.addRow("Tipo de Envio*:", self.tipo_envio_combo)
         form_layout.addRow("Email/Local*:", self.contato_edit)
+        form_layout.addRow("Telefone 1:", self.telefone1_edit)
+        form_layout.addRow("Telefone 2:", self.telefone2_edit)
+        form_layout.addRow("Nº de Computadores:", self.num_computadores_spin)
         form_layout.addRow("", self.gera_recibo_check)
         form_layout.addRow("", self.conta_xmls_check)
         form_layout.addRow("Nível:", self.nivel_edit)
         form_layout.addRow("Outros Detalhes:", self.detalhes_edit)
+        # --- FIM DA ALTERAÇÃO ---
+
         layout.addLayout(form_layout)
         botoes_layout = QHBoxLayout()
         self.salvar_btn = QPushButton("Salvar")
@@ -229,17 +245,35 @@ class DialogoCliente(QDialog):
         self.salvar_btn.clicked.connect(self.salvar)
         self.cancelar_btn.clicked.connect(self.reject)
         if self.cliente_id:
-            self.carregar_dados()
-    def carregar_dados(self): pass
+            self.carregar_dados() # carregar_dados será modificado em JanelaClientes
+
+    def carregar_dados(self): pass # A lógica de carga fica em JanelaClientes.editar_cliente
+
     def salvar(self):
         nome = self.nome_edit.text().strip()
         tipo_envio = self.tipo_envio_combo.currentText()
         contato = self.contato_edit.text().strip()
+        
+        # Extrai o texto dos telefones, removendo a máscara se estiver incompleto
+        telefone1 = self.telefone1_edit.text() if self.telefone1_edit.hasAcceptableInput() else ""
+        telefone2 = self.telefone2_edit.text() if self.telefone2_edit.hasAcceptableInput() else ""
+
         if not nome or not tipo_envio or not contato:
             QMessageBox.warning(self, "Campos Obrigatórios", "Por favor, preencha os campos Nome, Tipo de Envio e Email/Local.")
             return
-        dados_cliente = { "nome": nome, "tipo_envio": tipo_envio, "contato": contato, "gera_recibo": self.gera_recibo_check.isChecked(), "conta_xmls": self.conta_xmls_check.isChecked(), "nivel": self.nivel_edit.text().strip(), "detalhes": self.detalhes_edit.toPlainText().strip(), "numero_computadores": self.num_computadores_spin.value() }
+
+        dados_cliente = {
+            "nome": nome, "tipo_envio": tipo_envio, "contato": contato,
+            "gera_recibo": self.gera_recibo_check.isChecked(),
+            "conta_xmls": self.conta_xmls_check.isChecked(),
+            "nivel": self.nivel_edit.text().strip(),
+            "detalhes": self.detalhes_edit.toPlainText().strip(),
+            "numero_computadores": self.num_computadores_spin.value(),
+            "telefone1": telefone1,
+            "telefone2": telefone2
+        }
         usuario_nome = self.usuario_logado['USERNAME']
+        
         if self.cliente_id:
             database.atualizar_cliente(self.cliente_id, **dados_cliente, usuario_logado=usuario_nome)
         else:
@@ -658,16 +692,18 @@ class JanelaClientes(QDialog):
         linha_selecionada = itens_selecionados[0].row()
         cliente_data = self.tabela_clientes.item(linha_selecionada, 0).data(Qt.UserRole)
         dialog = DialogoCliente(self.usuario_logado, cliente_id=cliente_data['ID'], parent=self)
-        
+            
         dialog.nome_edit.setText(cliente_data['NOME'])
         dialog.tipo_envio_combo.setCurrentText(cliente_data['TIPO_ENVIO'])
         dialog.contato_edit.setText(cliente_data['CONTATO'])
+        dialog.telefone1_edit.setText(cliente_data.get('TELEFONE1', ''))
+        dialog.telefone2_edit.setText(cliente_data.get('TELEFONE2', ''))
         dialog.gera_recibo_check.setChecked(bool(cliente_data['GERA_RECIBO']))
         dialog.conta_xmls_check.setChecked(bool(cliente_data['CONTA_XMLS']))
         dialog.nivel_edit.setText(str(cliente_data.get('NIVEL', '')))
         dialog.detalhes_edit.setText(cliente_data.get('OUTROS_DETALHES', ''))
         dialog.num_computadores_spin.setValue(cliente_data.get('NUMERO_COMPUTADORES', 0))
-        
+            
         if dialog.exec_() == QDialog.Accepted: 
             self.carregar_clientes()
 
@@ -820,6 +856,7 @@ class EntregaDialog(QDialog):
         self.entrega_data = entrega_data
         self.usuario_logado = usuario_logado
         self.date = date
+        self.cliente_selecionado_data = None # Armazena dados do cliente atual
 
         self.setWindowTitle("Agendar Nova Entrega" if not entrega_data else "Editar Entrega")
         layout = QFormLayout(self)
@@ -831,18 +868,22 @@ class EntregaDialog(QDialog):
 
         self.status_combo = QComboBox()
         self.responsavel_edit = QLineEdit()
+        self.responsavel_edit.setReadOnly(True) # Tarefa 1 da sua lista (bloquear campo)
         self.observacoes_edit = QTextEdit()
         
         self.retificacao_check = QCheckBox("É Retificação?")
         
         self.rascunho_edit = QLineEdit()
         self.rascunho_edit.setReadOnly(True)
-        self.rascunho_edit.setPlaceholderText("Selecione um cliente e status...")
-        
-        copiar_btn = QPushButton("Copiar")
-        rascunho_layout = QHBoxLayout()
-        rascunho_layout.addWidget(self.rascunho_edit)
-        rascunho_layout.addWidget(copiar_btn)
+        self.rascunho_edit.setPlaceholderText("Selecione um cliente...")
+
+        # --- INÍCIO DA ALTERAÇÃO ---
+        botoes_copia_layout = QHBoxLayout()
+        copiar_email_btn = QPushButton("Copiar Email/Local")
+        copiar_rascunho_btn = QPushButton("Copiar Rascunho")
+        botoes_copia_layout.addWidget(copiar_email_btn)
+        botoes_copia_layout.addWidget(copiar_rascunho_btn)
+        # --- FIM DA ALTERAÇÃO ---
 
         self.salvar_btn = QPushButton("Salvar")
         self.cancelar_btn = QPushButton("Cancelar")
@@ -854,7 +895,8 @@ class EntregaDialog(QDialog):
         layout.addRow("Status:", self.status_combo)
         layout.addRow("Responsável:", self.responsavel_edit)
         layout.addRow("", self.retificacao_check)
-        layout.addRow("Rascunho:", rascunho_layout)
+        layout.addRow("Rascunho:", self.rascunho_edit)
+        layout.addRow("Ações:", botoes_copia_layout) # Adiciona a linha de botões
         layout.addRow("Observações:", self.observacoes_edit)
 
         if entrega_data:
@@ -878,12 +920,14 @@ class EntregaDialog(QDialog):
         
         self.salvar_btn.clicked.connect(self.accept)
         self.cancelar_btn.clicked.connect(self.reject)
-        copiar_btn.clicked.connect(self.copiar_rascunho)
-        self.cliente_combo.currentIndexChanged.connect(self.atualizar_rascunho)
+        copiar_rascunho_btn.clicked.connect(self.copiar_rascunho)
+        copiar_email_btn.clicked.connect(self.copiar_contato_cliente) # Conecta novo botão
+        self.cliente_combo.currentIndexChanged.connect(self.atualizar_dados_cliente)
         self.status_combo.currentIndexChanged.connect(self.atualizar_rascunho)
-        self.atualizar_rascunho()
+        self.atualizar_dados_cliente() # Chamada inicial
 
     def carregar_combos(self):
+        #... (sem alterações nesta função)
         self.cliente_combo.clear()
         self.status_combo.clear()
         clientes = database.listar_clientes()
@@ -897,19 +941,23 @@ class EntregaDialog(QDialog):
         else:
             for cliente in clientes:
                 self.cliente_combo.addItem(cliente['NOME'], cliente['ID'])
-
         completer = QCompleter([self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())], self)
-        
         completer.setCaseSensitivity(Qt.CaseInsensitive)
-        
         completer.setFilterMode(Qt.MatchContains)
-        
         self.cliente_combo.setCompleter(completer)
-
         for status in status_list:
             self.status_combo.addItem(status['NOME'], status['ID'])
 
+    def atualizar_dados_cliente(self):
+        cliente_id = self.cliente_combo.currentData()
+        if cliente_id:
+            self.cliente_selecionado_data = database.get_cliente_por_id(cliente_id)
+        else:
+            self.cliente_selecionado_data = None
+        self.atualizar_rascunho()
+
     def atualizar_rascunho(self):
+        #... (sem alterações nesta função)
         if not self.cliente_combo.isEnabled(): return
         nome_cliente = self.cliente_combo.currentText()
         nome_status = self.status_combo.currentText()
@@ -920,6 +968,18 @@ class EntregaDialog(QDialog):
             texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
         self.rascunho_edit.setText(texto_rascunho)
     
+    def copiar_contato_cliente(self):
+        if self.cliente_selecionado_data and self.cliente_selecionado_data.get('CONTATO'):
+            texto_para_copiar = self.cliente_selecionado_data['CONTATO']
+            clipboard = QApplication.clipboard()
+            clipboard.setText(texto_para_copiar)
+            botao = self.sender()
+            botao.setEnabled(False) 
+            botao.setText("Copiado!")
+            QTimer.singleShot(1500, lambda: (botao.setText("Copiar Email/Local"), botao.setEnabled(True)))
+        else:
+            QMessageBox.information(self, "Aviso", "Nenhum contato encontrado para este cliente.")
+
     def copiar_rascunho(self):
         texto_para_copiar = self.rascunho_edit.text()
         if texto_para_copiar:
@@ -930,12 +990,13 @@ class EntregaDialog(QDialog):
             botao.setText("Copiado!")
             def restaurar_botao():
                 try:
-                    botao.setText("Copiar")
+                    botao.setText("Copiar Rascunho")
                     botao.setEnabled(True)
                 except RuntimeError: pass
             QTimer.singleShot(1500, restaurar_botao)
 
     def get_data(self):
+        #... (sem alterações nesta função)
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
