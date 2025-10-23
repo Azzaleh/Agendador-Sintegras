@@ -118,44 +118,36 @@ def iniciar_db():
         cur.execute("CREATE TABLE STATUS (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(50) UNIQUE NOT NULL, COR_HEX VARCHAR(10) NOT NULL)")
         criar_generator_e_trigger(cur, 'STATUS')
     if not tabela_existe(cur, 'CLIENTES'):
-        # Modificação para VARCHAR(150) no nome para consistência
         cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
         criar_generator_e_trigger(cur, 'CLIENTES')
     if not tabela_existe(cur, 'ENTREGAS'):
         cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(150), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
 
-    else: # Se a tabela ENTREGAS já existe, verifica se precisa adicionar a coluna
-        try:
-            cur.execute("""
-                SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS
-                WHERE RDB$RELATION_NAME = 'ENTREGAS' AND RDB$FIELD_NAME = 'IS_RETIFICACAO'
-            """)
-            if cur.fetchone() is None:
-                print("🩵 Adicionando campo IS_RETIFICACAO na tabela ENTREGAS...")
-                cur.execute("ALTER TABLE ENTREGAS ADD IS_RETIFICACAO SMALLINT DEFAULT 0;")
-                conn.commit()
-        except Exception as e:
-            print(f"⚠️ Erro ao verificar/adicionar campo IS_RETIFICACAO: {e}")   
-
-    # --- INÍCIO DA CORREÇÃO ---
-    # Este é o local CORRETO para adicionar/verificar novas colunas
+    # --- Verificações e Alterações de Colunas ---
     try:
+        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'ENTREGAS' AND RDB$FIELD_NAME = 'IS_RETIFICACAO'")
+        if cur.fetchone() is None:
+            cur.execute("ALTER TABLE ENTREGAS ADD IS_RETIFICACAO SMALLINT DEFAULT 0;")
+        
         cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'CLIENTES' AND RDB$FIELD_NAME = 'TELEFONE1'")
         if cur.fetchone() is None:
-            print("🔧 Adicionando colunas de telefone na tabela CLIENTES...")
             cur.execute("ALTER TABLE CLIENTES ADD TELEFONE1 VARCHAR(20);")
             cur.execute("ALTER TABLE CLIENTES ADD TELEFONE2 VARCHAR(20);")
-            conn.commit()
-            print("✅ Colunas de telefone adicionadas com sucesso.")
+
+        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'CLIENTES' AND RDB$FIELD_NAME = 'RECORRENCIA_ATIVA'")
+        if cur.fetchone() is None:
+            cur.execute("ALTER TABLE CLIENTES ADD RECORRENCIA_ATIVA SMALLINT DEFAULT 0;")
+            cur.execute("ALTER TABLE CLIENTES ADD RECORRENCIA_DIA INTEGER DEFAULT 1;")
+            cur.execute("ALTER TABLE CLIENTES ADD RECORRENCIA_HORA VARCHAR(5) DEFAULT '08:00';")
+            cur.execute("ALTER TABLE CLIENTES ADD RECORRENCIA_MESES INTEGER DEFAULT 0;")
+
     except Exception as e:
-        print(f"ℹ️  Colunas de telefone já existiam ou não puderam ser criadas: {e}")
-    # --- FIM DA CORREÇÃO ---
+        print(f"⚠️ Erro ao verificar/adicionar colunas: {e}")
 
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
         criar_generator_e_trigger(cur, 'LOGS')
-    conn.commit()
 
     # --- Dados Padrão ---
     cur.execute("SELECT COUNT(*) FROM USUARIOS")
@@ -166,6 +158,8 @@ def iniciar_db():
     if cur.fetchone()[0] == 0:
         status_padrao = [('Pendente', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')]
         cur.executemany("INSERT INTO STATUS (NOME, COR_HEX) VALUES (?, ?)", status_padrao)
+    
+    # Commit único para todas as alterações
     conn.commit()
     conn.close()
     print("✅ Banco Firebird 2.5 inicializado com sucesso!")
@@ -471,7 +465,71 @@ def get_entregas_por_dia(data_str):
         return entregas
     finally:
         if conn: conn.close()
+
+def limpar_agendamentos_futuros_pendentes(cliente_id, usuario_logado):
+    """
+    Exclui todos os agendamentos FUTUROS com status 'Pendente' para um cliente específico.
+    Isso evita a duplicação ao atualizar uma regra de recorrência.
+    """
+    sql_status = "SELECT ID FROM STATUS WHERE UPPER(NOME) = 'PENDENTE'"
+    sql_delete = "DELETE FROM ENTREGAS WHERE CLIENTE_ID = ? AND STATUS_ID = ? AND DATA_VENCIMENTO > CURRENT_DATE"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
         
+        cur.execute(sql_status)
+        resultado_status = cur.fetchone()
+        if not resultado_status:
+            print("⚠️ Status 'Pendente' não encontrado. Não foi possível limpar agendamentos.")
+            return
+
+        status_pendente_id = resultado_status[0]
+        
+        cur.execute(sql_delete, (cliente_id, status_pendente_id))
+        conn.commit()
+        
+        if cur.rowcount > 0:
+            registrar_log(usuario_logado, "LIMPEZA_RECORRENCIA", f"{cur.rowcount} agendamentos futuros pendentes do cliente ID {cliente_id} foram removidos.")
+            
+    except fdb.Error as e:
+        print(f"Erro ao limpar agendamentos futuros: {e}")
+    finally:
+        if conn: conn.close()
+
+def criar_agendamentos_recorrentes(agendamentos_para_criar, usuario_logado):
+    """
+    Recebe uma lista de agendamentos já validados (com data, hora, etc.) e os insere no banco.
+    """
+    if not agendamentos_para_criar:
+        return
+        
+    cliente_id = agendamentos_para_criar[0]['cliente_id']
+    
+    # Primeiro, limpa os agendamentos pendentes futuros para este cliente
+    limpar_agendamentos_futuros_pendentes(cliente_id, usuario_logado)
+
+    conn = conectar()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT ID FROM STATUS WHERE UPPER(NOME) = 'PENDENTE'")
+    status_pendente_id = cur.fetchone()[0]
+
+    for agendamento in agendamentos_para_criar:
+        adicionar_entrega(
+            data=agendamento['data'],
+            horario=agendamento['hora'],
+            status_id=status_pendente_id,
+            cliente_id=cliente_id,
+            responsavel=usuario_logado,
+            observacoes=agendamento['obs'],
+            is_retificacao=False,
+            usuario_logado=usuario_logado
+        )
+
+    conn.close()
+    registrar_log(usuario_logado, "CRIAR_RECORRENCIA", f"Criados {len(agendamentos_para_criar)} agendamentos recorrentes para o cliente ID {cliente_id}.")
+
 #==============================================================================
 # FUNÇÕES PARA O DASHBOARD E RELATÓRIOS
 #==============================================================================
@@ -745,6 +803,26 @@ def get_dados_ranking_clientes_periodo(data_inicio, data_fim):
 
 def get_cliente_por_id(cliente_id):
     sql = "SELECT * FROM CLIENTES WHERE ID = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (cliente_id,))
+        return dict_factory(cur, cur.fetchone())
+    finally:
+        if conn: conn.close()
+
+def verificar_agendamento_pendente_existente(cliente_id):
+    """
+    Verifica se um cliente já possui um agendamento com status 'Pendente'.
+    Retorna os dados do agendamento se encontrado, caso contrário, None.
+    """
+    sql = """
+        SELECT FIRST 1 e.ID, e.DATA_VENCIMENTO, e.HORARIO
+        FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE e.CLIENTE_ID = ? AND UPPER(s.NOME) = 'PENDENTE'
+    """
     conn = None
     try:
         conn = conectar()

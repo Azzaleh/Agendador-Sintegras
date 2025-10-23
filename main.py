@@ -192,6 +192,7 @@ class DayCellWidget(QWidget):
 class DialogoCliente(QDialog):
     def __init__(self, usuario_logado, cliente_id=None, parent=None):
         super().__init__(parent)
+        self.main_window = parent
         self.usuario_logado = usuario_logado
         self.cliente_id = cliente_id
         self.setWindowTitle("Adicionar Novo Cliente" if not cliente_id else "Editar Cliente")
@@ -232,7 +233,35 @@ class DialogoCliente(QDialog):
         form_layout.addRow("", self.conta_xmls_check)
         form_layout.addRow("Nível:", self.nivel_edit)
         form_layout.addRow("Outros Detalhes:", self.detalhes_edit)
-        # --- FIM DA ALTERAÇÃO ---
+        self.recorrencia_group = QGroupBox("Agendamento Recorrente (Opcional)")
+        self.recorrencia_group.setCheckable(True)
+        self.recorrencia_group.setChecked(False)
+
+        recorrencia_layout = QFormLayout(self.recorrencia_group)
+        
+        self.dia_recorrencia_spin = QSpinBox()
+        self.dia_recorrencia_spin.setRange(1, 31)
+        self.hora_recorrencia_edit = QTimeEdit()
+        self.hora_recorrencia_edit.setDisplayFormat("HH:mm")
+
+        periodo_layout = QHBoxLayout()
+        self.radio_4_meses = QRadioButton("4 meses")
+        self.radio_8_meses = QRadioButton("8 meses")
+        self.radio_12_meses = QRadioButton("12 meses")
+        self.radio_4_meses.setChecked(True)
+        periodo_layout.addWidget(self.radio_4_meses)
+        periodo_layout.addWidget(self.radio_8_meses)
+        periodo_layout.addWidget(self.radio_12_meses)
+
+        recorrencia_layout.addRow("Agendar todo dia:", self.dia_recorrencia_spin)
+        recorrencia_layout.addRow("Às:", self.hora_recorrencia_edit)
+        recorrencia_layout.addRow("Para os próximos:", periodo_layout)
+        
+        layout.addLayout(form_layout)
+        layout.addWidget(self.recorrencia_group)
+        # ============== FIM DA NOVA ALTERAÇÃO (RECORRÊNCIA) ==============
+
+        botoes_layout = QHBoxLayout()
 
         layout.addLayout(form_layout)
         botoes_layout = QHBoxLayout()
@@ -254,7 +283,6 @@ class DialogoCliente(QDialog):
         tipo_envio = self.tipo_envio_combo.currentText()
         contato = self.contato_edit.text().strip()
         
-        # Extrai o texto dos telefones, removendo a máscara se estiver incompleto
         telefone1 = self.telefone1_edit.text() if self.telefone1_edit.hasAcceptableInput() else ""
         telefone2 = self.telefone2_edit.text() if self.telefone2_edit.hasAcceptableInput() else ""
 
@@ -274,11 +302,85 @@ class DialogoCliente(QDialog):
         }
         usuario_nome = self.usuario_logado['USERNAME']
         
-        if self.cliente_id:
-            database.atualizar_cliente(self.cliente_id, **dados_cliente, usuario_logado=usuario_nome)
-        else:
-            database.adicionar_cliente(**dados_cliente, usuario_logado=usuario_nome)
-        self.accept()
+        try:
+            if self.cliente_id:
+                database.atualizar_cliente(self.cliente_id, **dados_cliente, usuario_logado=usuario_nome)
+                cliente_id_salvo = self.cliente_id
+            else:
+                database.adicionar_cliente(**dados_cliente, usuario_logado=usuario_nome)
+                conn = database.conectar()
+                cur = conn.cursor()
+                cur.execute("SELECT MAX(ID) FROM CLIENTES")
+                cliente_id_salvo = cur.fetchone()[0]
+                conn.close()
+
+            # ============== INÍCIO DA LÓGICA CORRIGIDA E NO LUGAR CERTO ==============
+            if self.recorrencia_group.isChecked():
+                dia_desejado = self.dia_recorrencia_spin.value()
+                hora_desejada = self.hora_recorrencia_edit.time().toString("HH:mm")
+                meses = 4
+                if self.radio_8_meses.isChecked(): meses = 8
+                elif self.radio_12_meses.isChecked(): meses = 12
+
+                reply = QMessageBox.question(self, "Confirmar Agendamento Recorrente",
+                                        f"Serão criados {meses} agendamentos mensais.\n"
+                                        "Se a data cair em um Sábado ou Domingo, o sistema buscará o próximo dia útil com horários livres.\n\n"
+                                        "Deseja continuar?",
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+                if reply == QMessageBox.Yes:
+                    lista_agendamentos_validados = []
+                    hoje = QDate.currentDate()
+
+                    for i in range(meses):
+                        ano_alvo = hoje.year()
+                        mes_alvo = hoje.month() + i + 1
+                        
+                        if mes_alvo > 12:
+                            ano_alvo += (mes_alvo - 1) // 12
+                            mes_alvo = (mes_alvo - 1) % 12 + 1
+                        
+                        dias_no_mes = QDate(ano_alvo, mes_alvo, 1).daysInMonth()
+                        dia_real = min(dia_desejado, dias_no_mes)
+                        
+                        data_alvo = QDate(ano_alvo, mes_alvo, dia_real)
+                        
+                        data_final_agendamento = data_alvo
+                        while True:
+                            if data_final_agendamento <= hoje:
+                                data_final_agendamento = hoje.addDays(1)
+
+                            # 1. Verifica se é fim de semana (Sábado=6, Domingo=7)
+                            if data_final_agendamento.dayOfWeek() >= 6:
+                                data_final_agendamento = data_final_agendamento.addDays(1)
+                                continue
+
+                            # 2. Verifica se o dia está lotado
+                            horarios_possiveis = self.main_window.gerar_horarios_dinamicos(data_final_agendamento)
+                            agendamentos_no_dia = database.get_entregas_por_dia(data_final_agendamento.toString("yyyy-MM-dd"))
+                            
+                            if len(agendamentos_no_dia) < len(horarios_possiveis):
+                                obs = "Agendamento criado automaticamente por recorrência."
+                                if data_final_agendamento != data_alvo:
+                                    obs += f" (Data original: {data_alvo.toString('dd/MM/yyyy')})"
+                                
+                                lista_agendamentos_validados.append({
+                                    "cliente_id": cliente_id_salvo,
+                                    "data": data_final_agendamento.toString("yyyy-MM-dd"),
+                                    "hora": hora_desejada,
+                                    "obs": obs
+                                })
+                                break 
+                            else:
+                                data_final_agendamento = data_final_agendamento.addDays(1)
+                    
+                    # Passa a lista já validada para a função do banco de dados
+                    database.criar_agendamentos_recorrentes(lista_agendamentos_validados, usuario_nome)
+                    QMessageBox.information(self, "Sucesso", f"{len(lista_agendamentos_validados)} agendamentos recorrentes foram criados com sucesso!")
+
+            # ============== FIM DA LÓGICA CORRIGIDA ==============
+        finally:
+            self.accept()
 
 class DialogoClientesPendentes(QDialog):
     def __init__(self, lista_clientes, mes, ano, parent=None):
@@ -701,8 +803,9 @@ class JanelaClientes(QDialog):
         self.filtrar_tabela()
 
     def adicionar_cliente(self):
-        dialog = DialogoCliente(self.usuario_logado, parent=self)
-        if dialog.exec_() == QDialog.Accepted: self.carregar_clientes()
+        dialog = DialogoCliente(self.usuario_logado, parent=self.parent())
+        if dialog.exec_() == QDialog.Accepted: 
+            self.carregar_clientes()
 
     def editar_cliente(self):
         itens_selecionados = self.tabela_clientes.selectedItems()
@@ -711,8 +814,10 @@ class JanelaClientes(QDialog):
             return
         linha_selecionada = itens_selecionados[0].row()
         cliente_data = self.tabela_clientes.item(linha_selecionada, 0).data(Qt.UserRole)
-        dialog = DialogoCliente(self.usuario_logado, cliente_id=cliente_data['ID'], parent=self)
-            
+        
+        # Apenas uma linha, usando self.parent() para passar a janela principal
+        dialog = DialogoCliente(self.usuario_logado, cliente_id=cliente_data['ID'], parent=self.parent()) 
+        
         dialog.nome_edit.setText(cliente_data['NOME'])
         dialog.tipo_envio_combo.setCurrentText(cliente_data['TIPO_ENVIO'])
         dialog.contato_edit.setText(cliente_data['CONTATO'])
@@ -1105,14 +1210,49 @@ class DayViewDialog(QDialog):
     def gerenciar_agendamento_duplo_clique(self, row, column):
         item_horario = self.tabela_agenda.item(row, 0)
         agendamento_existente = item_horario.data(Qt.UserRole)
+        
         if agendamento_existente:
             self.editar_agendamento()
         else:
             horario = item_horario.text()
             dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
+            
             if dialog.exec_() == QDialog.Accepted:
                 data = dialog.get_data()
-                database.adicionar_entrega(self.date.toString("yyyy-MM-dd"), horario, data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
+                cliente_id_selecionado = data['cliente_id']
+
+                # ============== INÍCIO DA ALTERAÇÃO ==============
+                pendente_existente = database.verificar_agendamento_pendente_existente(cliente_id_selecionado)
+
+                if pendente_existente:
+                    data_obj = pendente_existente['DATA_VENCIMENTO']
+                    data_pendente = data_obj.strftime('%d/%m/%Y')
+                    hora_pendente = pendente_existente['HORARIO']
+                    
+                    reply = QMessageBox.question(self, "Cliente já possui agendamento pendente",
+                                               f"Este cliente já tem um agendamento pendente para {data_pendente} às {hora_pendente}.\n\n"
+                                               "Deseja desmarcar o agendamento antigo e criar este novo?",
+                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+                    if reply == QMessageBox.No:
+                        QMessageBox.information(self, "Operação Cancelada", "O novo agendamento não foi criado.")
+                        return 
+                    
+                    else:
+                        database.deletar_entrega(pendente_existente['ID'], self.usuario_logado['USERNAME'])
+                # ============== FIM DA ALTERAÇÃO ==============
+
+                database.adicionar_entrega(
+                    self.date.toString("yyyy-MM-dd"), 
+                    horario, 
+                    data['status_id'], 
+                    data['cliente_id'], 
+                    data['responsavel'], 
+                    data['observacoes'], 
+                    data['is_retificacao'], 
+                    self.usuario_logado['USERNAME']
+                )
+
         self.carregar_agenda_dia()
         self.parent().populate_calendar()
 
@@ -1341,30 +1481,33 @@ class ConfigDialog(QDialog):
         self.remoto_db_group.setEnabled(not self.radio_local.isChecked())
 
     def salvar(self):
+        # Salva as configurações de Horários
         if self.radio_auto.isChecked():
             self.settings.setValue("horarios/modo", "automatico")
-            self.settings.setValue("horarios/hora_inicio", self.inicio_edit.time().toString('HH:mm'))
-            self.settings.setValue("horarios/hora_fim", self.fim_edit.time().toString('HH:mm'))
-            self.settings.setValue("horarios/intervalo_minutos", self.intervalo_spin.value())
         else:
             self.settings.setValue("horarios/modo", "manual")
-            self.settings.setValue("horarios/lista_manual", self.lista_manual_edit.text())
+        self.settings.setValue("horarios/hora_inicio", self.inicio_edit.time().toString('HH:mm'))
+        self.settings.setValue("horarios/hora_fim", self.fim_edit.time().toString('HH:mm'))
+        self.settings.setValue("horarios/intervalo_minutos", self.intervalo_spin.value())
+        self.settings.setValue("horarios/lista_manual", self.lista_manual_edit.text())
+        
+        # Salva as configurações Gerais
         self.settings.setValue("geral/minutos_lembrete", self.lembrete_spin.value())
         self.settings.setValue("geral/refresh_intervalo_segundos", self.refresh_interval_spin.value())
+
+        # Salva as configurações de Banco de Dados
         if self.radio_local.isChecked():
             self.settings.setValue("database/modo", "local")
-            self.settings.setValue("database/caminho_local", self.caminho_local_edit.text())
-            self.settings.setValue("database/usuario", "SYSDBA")
-            self.settings.setValue("database/senha", "masterkey")
         else:
             self.settings.setValue("database/modo", "remoto")
-            self.settings.setValue("database/host_remoto", self.host_remoto_edit.text())
-            self.settings.setValue("database/porta_remota", self.porta_remota_spin.value())
-            self.settings.setValue("database/caminho_remoto", self.caminho_remoto_edit.text())
-            self.settings.setValue("database/usuario", self.usuario_remoto_edit.text())
-            self.settings.setValue("database/senha", self.senha_remota_edit.text())
+        self.settings.setValue("database/caminho_local", self.caminho_local_edit.text())
+        self.settings.setValue("database/host_remoto", self.host_remoto_edit.text())
+        self.settings.setValue("database/porta_remota", self.porta_remota_spin.value())
+        self.settings.setValue("database/caminho_remoto", self.caminho_remoto_edit.text())
+        self.settings.setValue("database/usuario", self.usuario_remoto_edit.text())
+        self.settings.setValue("database/senha", self.senha_remota_edit.text())
 
-        QMessageBox.information(self, "Salvo", "Configurações salvas. **Por favor, reinicie o programa** para que as alterações tenham efeito.")
+        QMessageBox.information(self, "Sucesso", "Configurações salvas com sucesso.\nAlgumas alterações podem exigir que o programa seja reiniciado.")
         self.accept()
 
 class SecretReportDialog(QDialog):
