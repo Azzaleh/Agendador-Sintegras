@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.5"
+VERSAO_ATUAL = "1.6"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -245,12 +245,15 @@ class DialogoCliente(QDialog):
         self.dia_recorrencia_spin.setRange(1, 31)
         self.hora_recorrencia_edit = QTimeEdit()
         self.hora_recorrencia_edit.setDisplayFormat("HH:mm")
+        self.hora_recorrencia_edit.setTime(QTime(9, 0))
 
         periodo_layout = QHBoxLayout()
+        self.radio_1_mes = QRadioButton("1 mês")
         self.radio_4_meses = QRadioButton("4 meses")
         self.radio_8_meses = QRadioButton("8 meses")
         self.radio_12_meses = QRadioButton("12 meses")
-        self.radio_4_meses.setChecked(True)
+        self.radio_1_mes.setChecked(True)
+        periodo_layout.addWidget(self.radio_1_mes)
         periodo_layout.addWidget(self.radio_4_meses)
         periodo_layout.addWidget(self.radio_8_meses)
         periodo_layout.addWidget(self.radio_12_meses)
@@ -317,8 +320,9 @@ class DialogoCliente(QDialog):
             if self.recorrencia_group.isChecked():
                 dia_desejado = self.dia_recorrencia_spin.value()
                 hora_desejada = self.hora_recorrencia_edit.time().toString("HH:mm")
-                meses = 4
-                if self.radio_8_meses.isChecked(): meses = 8
+                meses = 1
+                if self.radio_4_meses.isChecked(): meses = 4
+                elif self.radio_8_meses.isChecked(): meses = 8
                 elif self.radio_12_meses.isChecked(): meses = 12
 
                 msg_box = QMessageBox(self)
@@ -330,6 +334,7 @@ class DialogoCliente(QDialog):
                             "<ul>"
                             "<li>Se a data cair em um fim de semana ou feriado, busca o próximo dia útil.</li>"
                             "<li>Se o horário solicitado estiver ocupado, busca o próximo horário livre.</li>"
+                            "<li>Se o horário solicitado for <b>fora do expediente</b>, busca o primeiro horário livre no <b>próximo dia útil</b>.</li>"
                             "<li>Se não houver horários livres no dia, busca o próximo dia útil disponível.</li>"
                             "</ul>"
                             "Deseja continuar?")
@@ -343,10 +348,8 @@ class DialogoCliente(QDialog):
                 
                 msg_box.exec_()
 
-                # --- INÍCIO DA CORREÇÃO ---
-                # Verificamos diretamente qual botão foi clicado. Esta é a forma mais segura.
                 if msg_box.clickedButton() == sim_btn:
-                # --- FIM DA CORREÇÃO ---
+                
                     lista_agendamentos_validados = []
                     hoje = QDate.currentDate()
 
@@ -364,6 +367,11 @@ class DialogoCliente(QDialog):
                         data_alvo = QDate(ano_alvo, mes_alvo, dia_real)
                         
                         data_final_agendamento = data_alvo
+                        
+                        # Esta variável controla a partir de que horas a busca deve começar.
+                        # Inicialmente, é a hora que o usuário pediu.
+                        hora_de_inicio_da_busca = hora_desejada
+                        
                         while True:
                             if data_final_agendamento < hoje:
                                 data_final_agendamento = hoje.addDays(1)
@@ -380,7 +388,8 @@ class DialogoCliente(QDialog):
                             hora_final_agendamento = None
                             
                             for horario_candidato in horarios_possiveis:
-                                if horario_candidato >= hora_desejada and horario_candidato not in horarios_ocupados:
+                                # A busca agora usa a variável de controle
+                                if horario_candidato >= hora_de_inicio_da_busca and horario_candidato not in horarios_ocupados:
                                     hora_final_agendamento = horario_candidato
                                     break
 
@@ -395,9 +404,11 @@ class DialogoCliente(QDialog):
                                     "hora": hora_final_agendamento,
                                     "obs": obs
                                 })
-                                break 
+                                break # Sucesso! Sai do 'while True' e vai para o próximo mês.
                             else:
+                                # Falha! Pula para o próximo dia e reseta a hora de busca.
                                 data_final_agendamento = data_final_agendamento.addDays(1)
+                                hora_de_inicio_da_busca = "00:00" # Garante que no próximo dia a busca comece do início.
                     
                     database.criar_agendamentos_recorrentes(lista_agendamentos_validados, usuario_nome)
                     
@@ -1855,12 +1866,13 @@ class DialogoSobre(QDialog):
             <h2>Gerenciamento de Clientes</h2>
             <p>Acessível pelo botão "Gerenciar Clientes".</p>
             <ul>
-                <li><b>Agendamento Recorrente:</b> Ao adicionar ou editar um cliente, você pode criar agendamentos automáticos para os próximos meses.</li>
+                <li><b>Agendamento Recorrente:</b> Ao adicionar ou editar um cliente, você pode criar agendamentos automáticos para os próximos meses (1, 4, 8 ou 12 meses).</li>
                 <li><b>Lógica Inteligente de Recorrência:</b>
                     <ul>
-                        <li>Se a data calculada cair em um <b>Sábado, Domingo ou Feriado Nacional</b>, o sistema automaticamente busca o próximo dia útil.</li>
-                        <li>Se o horário solicitado no dia útil já estiver <b>ocupado</b>, o sistema busca o próximo horário livre disponível no mesmo dia.</li>
-                        <li>Se não houver mais horários livres no dia, o sistema avança para o próximo dia útil com vagas.</li>
+                        <li>Se a data calculada cair em um <b>Sábado, Domingo ou Feriado Nacional</b>, o sistema busca o próximo dia útil.</li>
+                        <li>Se o horário solicitado estiver <b>ocupado</b>, o sistema busca o próximo horário livre disponível no <b>mesmo dia</b>.</li>
+                        <li>Se o horário solicitado for <b>fora do expediente</b>, o sistema busca o primeiro horário livre no <b>próximo dia útil</b>.</li>
+                        <li>Se não houver mais horários livres no dia, o sistema também avança para o próximo dia útil com vagas.</li>
                     </ul>
                 </li>
                 <li><b>Verificar Pendentes e Inativos:</b> Gere relatórios rápidos para ver quem ainda não foi agendado no mês ou quem não agenda há mais de 3 meses.</li>
@@ -1882,7 +1894,6 @@ class DialogoSobre(QDialog):
         """
         self.browser.setHtml(documentacao_html)
 
-        # --- Botão de Fechar ---
         botoes_layout = QHBoxLayout()
         fechar_btn = QPushButton("Fechar")
         fechar_btn.clicked.connect(self.accept)
