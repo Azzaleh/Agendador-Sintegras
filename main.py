@@ -1760,7 +1760,7 @@ class RelatorioDialog(QDialog):
         self.atualizar_filtros_visiveis()
     
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_F12 and self.usuario_logado['USERNAME'].lower() == 'admin':
+        if event.key() == Qt.Key_F12 and self.usuario_logado['ID'] == 1:
             self.abrir_relatorio_secreto()
         else:
             super().keyPressEvent(event)
@@ -2431,11 +2431,18 @@ class CalendarWindow(QMainWindow):
         self.populate_calendar()
 
     def abrir_configuracoes(self):
+        # 1. Verifica se o usuário logado é o administrador principal (ID = 1)
+        if self.usuario_atual['ID'] != 1:
+            QMessageBox.warning(self, "Acesso Restrito", "Apenas o usuário administrador principal pode acessar as configurações.")
+            return
+
+        # 2. Pede a senha do usuário ATUALMENTE LOGADO
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             
-            if database.verificar_usuario('admin', senha_digitada):
+            # 3. Verifica a senha do usuário logado, e não de um 'admin' fixo
+            if database.verificar_senha_usuario_atual(self.usuario_atual['USERNAME'], senha_digitada):
                 dialog_config = ConfigDialog(self)
                 dialog_config.exec_()
             else:
