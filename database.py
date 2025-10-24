@@ -4,7 +4,7 @@ import hashlib
 import os
 import sys
 from datetime import datetime
-from PyQt5.QtCore import QSettings # Importa a classe para ler as configurações
+from PyQt5.QtCore import QSettings,QDate # Importa a classe para ler as configurações
 
 #==============================================================================
 # FUNÇÕES DE CONEXÃO E INICIALIZAÇÃO
@@ -123,8 +123,15 @@ def iniciar_db():
     if not tabela_existe(cur, 'ENTREGAS'):
         cur.execute("CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY, DATA_VENCIMENTO DATE NOT NULL, HORARIO VARCHAR(10) NOT NULL, STATUS_ID INTEGER, CLIENTE_ID INTEGER NOT NULL, RESPONSAVEL VARCHAR(150), OBSERVACOES BLOB SUB_TYPE TEXT, IS_RETIFICACAO SMALLINT DEFAULT 0, FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL, FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)")
         criar_generator_e_trigger(cur, 'ENTREGAS')
+    if not tabela_existe(cur, 'LOGS'):
+        cur.execute("CREATE TABLE LOGS ...")
+        criar_generator_e_trigger(cur, 'LOGS')
 
-    # --- Verificações e Alterações de Colunas ---
+    if not tabela_existe(cur, 'FERIADOS'):
+        print("📅 Criando tabela de Feriados...")
+        cur.execute("CREATE TABLE FERIADOS (ID INTEGER NOT NULL PRIMARY KEY, DATA DATE NOT NULL UNIQUE, TIPO VARCHAR(20) NOT NULL)")
+        criar_generator_e_trigger(cur, 'FERIADOS')
+
     try:
         cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'ENTREGAS' AND RDB$FIELD_NAME = 'IS_RETIFICACAO'")
         if cur.fetchone() is None:
@@ -144,6 +151,15 @@ def iniciar_db():
 
     except Exception as e:
         print(f"⚠️ Erro ao verificar/adicionar colunas: {e}")
+
+    try:
+        cur.execute("SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$RELATION_NAME = 'ENTREGAS' AND RDB$FIELD_NAME = 'TIPO_ATENDIMENTO'")
+        if cur.fetchone() is None:
+            print("🔧 Adicionando coluna 'TIPO_ATENDIMENTO' na tabela ENTREGAS...")
+            # Adiciona a coluna com um valor padrão para não quebrar os registros antigos
+            cur.execute("ALTER TABLE ENTREGAS ADD TIPO_ATENDIMENTO VARCHAR(20) DEFAULT 'AGENDADO' NOT NULL;")
+    except Exception as e:
+        print(f"ℹ️  Não foi possível adicionar a coluna TIPO_ATENDIMENTO: {e}")
 
     if not tabela_existe(cur, 'LOGS'):
         cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
@@ -205,6 +221,70 @@ def registrar_log(usuario_nome, acao, detalhes):
         print(f"Erro ao registrar log: {e}")
     finally:
         if conn: conn.close()
+
+def adicionar_feriado(data_str, tipo):
+    """Adiciona ou atualiza um feriado no banco de dados."""
+    # Tenta remover primeiro para evitar duplicatas e permitir a troca de tipo (ex: de municipal para nacional)
+    remover_feriado(data_str)
+    sql = "INSERT INTO FERIADOS (DATA, TIPO) VALUES (?, ?)"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data_str, tipo))
+        conn.commit()
+    except fdb.Error as e:
+        print(f"Erro ao adicionar feriado: {e}")
+    finally:
+        if conn: conn.close()
+
+def remover_feriado(data_str):
+    """Remove um feriado do banco de dados."""
+    sql = "DELETE FROM FERIADOS WHERE DATA = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data_str,))
+        conn.commit()
+    finally:
+        if conn: conn.close()
+
+def get_feriados_do_mes(ano, mes):
+    """Busca todos os feriados de um determinado mês e ano."""
+    sql = "SELECT DATA, TIPO FROM FERIADOS WHERE EXTRACT(YEAR FROM DATA) = ? AND EXTRACT(MONTH FROM DATA) = ?"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        # Retorna um dicionário no formato {QDate: 'tipo'}
+        return {QDate(row[0].year, row[0].month, row[0].day): row[1] for row in cur.fetchall()}
+    finally:
+        if conn: conn.close()
+
+def is_dia_invalido(data_qdate):
+    """
+    Função central que verifica se uma data é fim de semana OU feriado nacional.
+    Retorna True se for um dia inválido para agendamento, False caso contrário.
+    """
+    # 1. Verifica se é Sábado (6) ou Domingo (7)
+    if data_qdate.dayOfWeek() >= 6:
+        return True
+    
+    # 2. Verifica no banco de dados se é um feriado do tipo 'nacional'
+    sql = "SELECT ID FROM FERIADOS WHERE DATA = ? AND TIPO = 'nacional'"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (data_qdate.toString("yyyy-MM-dd"),))
+        if cur.fetchone():
+            return True # Encontrou um feriado nacional
+    finally:
+        if conn: conn.close()
+        
+    return False # Se não for fim de semana nem feriado, é um dia útil
 
 #==============================================================================
 # USUÁRIOS
@@ -404,25 +484,25 @@ def deletar_status(status_id, usuario_logado):
 #==============================================================================
 # ENTREGAS / AGENDAMENTOS
 #==============================================================================
-def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado):
-    sql = "INSERT INTO ENTREGAS (DATA_VENCIMENTO, HORARIO, STATUS_ID, CLIENTE_ID, RESPONSAVEL, OBSERVACOES, IS_RETIFICACAO) VALUES (?, ?, ?, ?, ?, ?, ?)"
+def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado, tipo_atendimento='AGENDADO'):
+    sql = "INSERT INTO ENTREGAS (DATA_VENCIMENTO, HORARIO, STATUS_ID, CLIENTE_ID, RESPONSAVEL, OBSERVACOES, IS_RETIFICACAO, TIPO_ATENDIMENTO) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (data, horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0))
+        cur.execute(sql, (data, horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, tipo_atendimento))
         conn.commit()
         registrar_log(usuario_logado, "CRIAR_AGENDAMENTO", f"Agendamento para cliente ID {cliente_id} em {data} às {horario}.")
     finally:
         if conn: conn.close()
 
-def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado):
-    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=? WHERE ID=?"
+def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado, tipo_atendimento):
+    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=?, TIPO_ATENDIMENTO=? WHERE ID=?"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, entrega_id))
+        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, tipo_atendimento, entrega_id))
         conn.commit()
         registrar_log(usuario_logado, "ATUALIZAR_AGENDAMENTO", f"Agendamento ID {entrega_id} atualizado.")
     finally:
@@ -441,7 +521,7 @@ def deletar_entrega(entrega_id, usuario_logado):
         if conn: conn.close()
 
 def get_entregas_por_dia(data_str):
-    # ADICIONADO e.IS_RETIFICACAO AO SELECT
+
     sql = """
         SELECT
             e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO,
@@ -450,7 +530,7 @@ def get_entregas_por_dia(data_str):
         FROM ENTREGAS e
         JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
         LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
-        WHERE e.DATA_VENCIMENTO = ?
+        WHERE e.DATA_VENCIMENTO = ? AND e.TIPO_ATENDIMENTO = 'AGENDADO'
     """
     conn = None
     try:
@@ -463,6 +543,28 @@ def get_entregas_por_dia(data_str):
             if entrega_dict:
                 entregas[entrega_dict['HORARIO']] = entrega_dict
         return entregas
+    finally:
+        if conn: conn.close()
+
+def get_solicitados_do_mes(ano, mes):
+    sql = """
+        SELECT
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO, e.TIPO_ATENDIMENTO,
+            c.NOME as NOME_CLIENTE,
+            s.NOME as NOME_STATUS, s.COR_HEX
+        FROM ENTREGAS e
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ? AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+        AND e.TIPO_ATENDIMENTO = 'SOLICITADO'
+        ORDER BY e.DATA_VENCIMENTO DESC, e.HORARIO DESC
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        return [dict_factory(cur, row) for row in cur.fetchall()]
     finally:
         if conn: conn.close()
 

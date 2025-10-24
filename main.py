@@ -178,15 +178,17 @@ class DayCellWidget(QWidget):
         marcar_municipal = menu.addAction("Marcar como Feriado Municipal")
         desmarcar = menu.addAction("Desmarcar Feriado")
         action = menu.exec_(event.globalPos())
+        
+        data_str = self.date.toString("yyyy-MM-dd")
+        
         if action == marcar_nacional:
-            self.calendar_window.feriados[self.date] = "nacional"
+            database.adicionar_feriado(data_str, "nacional")
         elif action == marcar_municipal:
-            self.calendar_window.feriados[self.date] = "municipal"
+            database.adicionar_feriado(data_str, "municipal")
         elif action == desmarcar:
-            if self.date in self.calendar_window.feriados:
-                del self.calendar_window.feriados[self.date]
+            database.remover_feriado(data_str)
+            
         self.calendar_window.populate_calendar()
-
 
 
 class DialogoCliente(QDialog):
@@ -259,11 +261,9 @@ class DialogoCliente(QDialog):
         
         layout.addLayout(form_layout)
         layout.addWidget(self.recorrencia_group)
-        # ============== FIM DA NOVA ALTERAÇÃO (RECORRÊNCIA) ==============
 
         botoes_layout = QHBoxLayout()
 
-        layout.addLayout(form_layout)
         botoes_layout = QHBoxLayout()
         self.salvar_btn = QPushButton("Salvar")
         self.cancelar_btn = QPushButton("Cancelar")
@@ -274,7 +274,7 @@ class DialogoCliente(QDialog):
         self.salvar_btn.clicked.connect(self.salvar)
         self.cancelar_btn.clicked.connect(self.reject)
         if self.cliente_id:
-            self.carregar_dados() # carregar_dados será modificado em JanelaClientes
+            self.carregar_dados() 
 
     def carregar_dados(self): pass # A lógica de carga fica em JanelaClientes.editar_cliente
 
@@ -314,7 +314,6 @@ class DialogoCliente(QDialog):
                 cliente_id_salvo = cur.fetchone()[0]
                 conn.close()
 
-            # ============== INÍCIO DA LÓGICA CORRIGIDA E NO LUGAR CERTO ==============
             if self.recorrencia_group.isChecked():
                 dia_desejado = self.dia_recorrencia_spin.value()
                 hora_desejada = self.hora_recorrencia_edit.time().toString("HH:mm")
@@ -322,13 +321,32 @@ class DialogoCliente(QDialog):
                 if self.radio_8_meses.isChecked(): meses = 8
                 elif self.radio_12_meses.isChecked(): meses = 12
 
-                reply = QMessageBox.question(self, "Confirmar Agendamento Recorrente",
-                                        f"Serão criados {meses} agendamentos mensais.\n"
-                                        "Se a data cair em um Sábado ou Domingo, o sistema buscará o próximo dia útil com horários livres.\n\n"
-                                        "Deseja continuar?",
-                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Question)
+                msg_box.setWindowTitle("Confirmar Agendamento Recorrente")
 
-                if reply == QMessageBox.Yes:
+                texto_html = ("Serão criados agendamentos mensais para este cliente.<br><br>"
+                            "<b>Regras de agendamento automático:</b>"
+                            "<ul>"
+                            "<li>Se a data cair em um fim de semana ou feriado, busca o próximo dia útil.</li>"
+                            "<li>Se o horário solicitado estiver ocupado, busca o próximo horário livre.</li>"
+                            "<li>Se não houver horários livres no dia, busca o próximo dia útil disponível.</li>"
+                            "</ul>"
+                            "Deseja continuar?")
+                
+                msg_box.setText(texto_html)
+                msg_box.setTextFormat(Qt.RichText)
+                msg_box.setStandardButtons(QMessageBox.NoButton)
+                sim_btn = msg_box.addButton("SIM", QMessageBox.YesRole)
+                nao_btn = msg_box.addButton("NÃO", QMessageBox.NoRole)
+                msg_box.setDefaultButton(nao_btn)
+                
+                msg_box.exec_()
+
+                # --- INÍCIO DA CORREÇÃO ---
+                # Verificamos diretamente qual botão foi clicado. Esta é a forma mais segura.
+                if msg_box.clickedButton() == sim_btn:
+                # --- FIM DA CORREÇÃO ---
                     lista_agendamentos_validados = []
                     hoje = QDate.currentDate()
 
@@ -347,38 +365,58 @@ class DialogoCliente(QDialog):
                         
                         data_final_agendamento = data_alvo
                         while True:
-                            if data_final_agendamento <= hoje:
+                            if data_final_agendamento < hoje:
                                 data_final_agendamento = hoje.addDays(1)
-
-                            # 1. Verifica se é fim de semana (Sábado=6, Domingo=7)
-                            if data_final_agendamento.dayOfWeek() >= 6:
+                                continue
+                            
+                            if database.is_dia_invalido(data_final_agendamento):
                                 data_final_agendamento = data_final_agendamento.addDays(1)
                                 continue
 
-                            # 2. Verifica se o dia está lotado
                             horarios_possiveis = self.main_window.gerar_horarios_dinamicos(data_final_agendamento)
                             agendamentos_no_dia = database.get_entregas_por_dia(data_final_agendamento.toString("yyyy-MM-dd"))
+                            horarios_ocupados = set(agendamentos_no_dia.keys())
                             
-                            if len(agendamentos_no_dia) < len(horarios_possiveis):
+                            hora_final_agendamento = None
+                            
+                            for horario_candidato in horarios_possiveis:
+                                if horario_candidato >= hora_desejada and horario_candidato not in horarios_ocupados:
+                                    hora_final_agendamento = horario_candidato
+                                    break
+
+                            if hora_final_agendamento:
                                 obs = "Agendamento criado automaticamente por recorrência."
-                                if data_final_agendamento != data_alvo:
-                                    obs += f" (Data original: {data_alvo.toString('dd/MM/yyyy')})"
+                                if data_final_agendamento != data_alvo or hora_final_agendamento != hora_desejada:
+                                    obs += f" (Solicitado para {data_alvo.toString('dd/MM/yyyy')} às {hora_desejada})"
                                 
                                 lista_agendamentos_validados.append({
                                     "cliente_id": cliente_id_salvo,
                                     "data": data_final_agendamento.toString("yyyy-MM-dd"),
-                                    "hora": hora_desejada,
+                                    "hora": hora_final_agendamento,
                                     "obs": obs
                                 })
                                 break 
                             else:
                                 data_final_agendamento = data_final_agendamento.addDays(1)
                     
-                    # Passa a lista já validada para a função do banco de dados
                     database.criar_agendamentos_recorrentes(lista_agendamentos_validados, usuario_nome)
-                    QMessageBox.information(self, "Sucesso", f"{len(lista_agendamentos_validados)} agendamentos recorrentes foram criados com sucesso!")
+                    
+                    # Mensagem de sucesso detalhada para o usuário saber o que aconteceu
+                    if not lista_agendamentos_validados:
+                        QMessageBox.warning(self, "Aviso", "Nenhuma data futura válida foi encontrada para agendamento.")
+                    else:
+                        datas_agendadas = [QDate.fromString(ag['data'], 'yyyy-MM-dd').toString('dd/MM/yyyy') for ag in lista_agendamentos_validados]
+                        mensagem_detalhada = (f"{len(lista_agendamentos_validados)} agendamentos recorrentes foram criados com sucesso para as seguintes datas:<br><br>"
+                                            f"<b>- {', '.join(datas_agendadas)}</b>")
+                        
+                        # Usamos um QMessageBox separado para a mensagem de sucesso
+                        msg_sucesso = QMessageBox(self)
+                        msg_sucesso.setIcon(QMessageBox.Information)
+                        msg_sucesso.setWindowTitle("Sucesso")
+                        msg_sucesso.setText(mensagem_detalhada)
+                        msg_sucesso.setTextFormat(Qt.RichText)
+                        msg_sucesso.exec_()
 
-            # ============== FIM DA LÓGICA CORRIGIDA ==============
         finally:
             self.accept()
 
@@ -854,7 +892,130 @@ class JanelaClientes(QDialog):
             # Passa o evento para o tratamento padrão para outras teclas
             super().keyPressEvent(event)
 
+class DialogoSolicitados(QDialog):
+    def __init__(self, usuario_logado, parent=None):
+        super().__init__(parent)
+        self.usuario_logado = usuario_logado
+        self.setWindowTitle("Atendimentos Solicitados / Não Agendados (Mês Atual)")
+        self.setMinimumSize(900, 600)
+        
+        layout = QVBoxLayout(self)
+        
+        self.tabela = QTableWidget()
+        self.tabela.setColumnCount(6)
+        self.tabela.setHorizontalHeaderLabels(["Data", "Horário", "Cliente", "Status", "Responsável", "Observações"])
+        self.tabela.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tabela.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabela.setSortingEnabled(True)
+        layout.addWidget(self.tabela)
+        
+        botoes_layout = QHBoxLayout()
+        add_btn = QPushButton("Adicionar Novo Atendimento")
+        edit_btn = QPushButton("Editar Atendimento")
+        del_btn = QPushButton("Excluir Atendimento")
+        botoes_layout.addStretch()
+        botoes_layout.addWidget(add_btn)
+        botoes_layout.addWidget(edit_btn)
+        botoes_layout.addWidget(del_btn)
+        layout.addLayout(botoes_layout)
+        
+        add_btn.clicked.connect(self.adicionar_solicitado)
+        edit_btn.clicked.connect(self.editar_solicitado)
+        del_btn.clicked.connect(self.excluir_solicitado)
+        self.tabela.cellDoubleClicked.connect(self.editar_solicitado)
+        
+        self.carregar_dados()
 
+    def carregar_dados(self):
+        hoje = QDate.currentDate()
+        solicitados = database.get_solicitados_do_mes(hoje.year(), hoje.month())
+        
+        self.tabela.setRowCount(len(solicitados))
+        for i, item in enumerate(solicitados):
+            data_obj = item['DATA_VENCIMENTO']
+            item_data = QTableWidgetItem(data_obj.strftime('%d/%m/%Y'))
+            item_data.setData(Qt.UserRole, item) # Guarda todos os dados na primeira célula
+            
+            self.tabela.setItem(i, 0, item_data)
+            self.tabela.setItem(i, 1, QTableWidgetItem(item['HORARIO']))
+            self.tabela.setItem(i, 2, QTableWidgetItem(item['NOME_CLIENTE']))
+            
+            item_status = QTableWidgetItem(item.get('NOME_STATUS', 'N/A'))
+            if item.get('COR_HEX'):
+                item_status.setBackground(QColor(item['COR_HEX']))
+            self.tabela.setItem(i, 3, item_status)
+            
+            self.tabela.setItem(i, 4, QTableWidgetItem(item.get('RESPONSAVEL', '')))
+            self.tabela.setItem(i, 5, QTableWidgetItem(item.get('OBSERVACOES', '')))
+
+    def adicionar_solicitado(self):
+        # Aqui está a mágica: abrimos a mesma janela de agendamento!
+        dialog = EntregaDialog(self.usuario_logado, QDate.currentDate(), parent=self)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            data = dialog.get_data()
+            horario = QTime.currentTime().toString("HH:mm") # Pega a hora atual para o encaixe
+            
+            database.adicionar_entrega(
+                QDate.currentDate().toString("yyyy-MM-dd"),
+                horario,
+                data['status_id'],
+                data['cliente_id'],
+                data['responsavel'],
+                data['observacoes'],
+                data['is_retificacao'],
+                self.usuario_logado['USERNAME'],
+                tipo_atendimento='SOLICITADO' # AQUI ESTÁ A DIFERENÇA
+            )
+            self.carregar_dados()
+
+    def editar_solicitado(self):
+        itens_selecionados = self.tabela.selectedItems()
+        if not itens_selecionados:
+            QMessageBox.information(self, "Aviso", "Por favor, selecione um atendimento na tabela para editar.")
+            return
+        
+        linha_selecionada = itens_selecionados[0].row()
+        dados_atendimento = self.tabela.item(linha_selecionada, 0).data(Qt.UserRole)
+        
+        # Reutilizamos a mesma janela de diálogo, passando os dados existentes
+        data_do_atendimento = QDate.fromString(str(dados_atendimento['DATA_VENCIMENTO']), 'yyyy-MM-dd')
+        dialog = EntregaDialog(self.usuario_logado, data_do_atendimento, entrega_data=dados_atendimento, parent=self)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            novos_dados = dialog.get_data()
+            
+            # Chamamos a função de atualizar, passando o tipo 'SOLICITADO'
+            database.atualizar_entrega(
+                entrega_id=dados_atendimento['ID'],
+                horario=dados_atendimento['HORARIO'], # Horário não é editável aqui
+                status_id=novos_dados['status_id'],
+                cliente_id=novos_dados['cliente_id'],
+                responsavel=novos_dados['responsavel'],
+                observacoes=novos_dados['observacoes'],
+                is_retificacao=novos_dados['is_retificacao'],
+                usuario_logado=self.usuario_logado['USERNAME'],
+                tipo_atendimento='SOLICITADO' # Mantemos o tipo
+            )
+            self.carregar_dados() # Atualiza a tabela com os novos dados
+
+    def excluir_solicitado(self):
+        itens_selecionados = self.tabela.selectedItems()
+        if not itens_selecionados:
+            QMessageBox.information(self, "Aviso", "Por favor, selecione um atendimento para excluir.")
+            return
+            
+        linha_selecionada = itens_selecionados[0].row()
+        dados_atendimento = self.tabela.item(linha_selecionada, 0).data(Qt.UserRole)
+        
+        reply = QMessageBox.question(self, "Confirmar Exclusão", 
+                                     f"Tem certeza que deseja excluir o atendimento para '{dados_atendimento['NOME_CLIENTE']}'?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            database.deletar_entrega(dados_atendimento['ID'], self.usuario_logado['USERNAME'])
+            self.carregar_dados()
 
 class FormularioStatusDialog(QDialog):
     def __init__(self, status=None, parent=None):
@@ -1083,7 +1244,7 @@ class EntregaDialog(QDialog):
         self.atualizar_rascunho()
 
     def atualizar_rascunho(self):
-        #... (sem alterações nesta função)
+       
         if not self.cliente_combo.isEnabled(): return
         nome_cliente = self.cliente_combo.currentText()
         nome_status = self.status_combo.currentText()
@@ -1122,7 +1283,7 @@ class EntregaDialog(QDialog):
             QTimer.singleShot(1500, restaurar_botao)
 
     def get_data(self):
-        #... (sem alterações nesta função)
+        
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
@@ -1221,7 +1382,7 @@ class DayViewDialog(QDialog):
                 data = dialog.get_data()
                 cliente_id_selecionado = data['cliente_id']
 
-                # ============== INÍCIO DA ALTERAÇÃO ==============
+                
                 pendente_existente = database.verificar_agendamento_pendente_existente(cliente_id_selecionado)
 
                 if pendente_existente:
@@ -1240,8 +1401,7 @@ class DayViewDialog(QDialog):
                     
                     else:
                         database.deletar_entrega(pendente_existente['ID'], self.usuario_logado['USERNAME'])
-                # ============== FIM DA ALTERAÇÃO ==============
-
+                
                 database.adicionar_entrega(
                     self.date.toString("yyyy-MM-dd"), 
                     horario, 
@@ -1270,7 +1430,7 @@ class DayViewDialog(QDialog):
         dialog = EntregaDialog(self.usuario_logado, self.date, entrega_data=agendamento_existente, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
-            database.atualizar_entrega(agendamento_existente['ID'], agendamento_existente['HORARIO'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'])
+            database.atualizar_entrega(agendamento_existente['ID'], agendamento_existente['HORARIO'], data['status_id'], data['cliente_id'], data['responsavel'], data['observacoes'], data['is_retificacao'], self.usuario_logado['USERNAME'],tipo_atendimento='AGENDADO')
             self.carregar_agenda_dia()
             self.parent().populate_calendar()
 
@@ -1322,7 +1482,6 @@ class DialogoResultadosBusca(QDialog):
             data_obj = QDate.fromString(str(res['DATA_VENCIMENTO']), 'yyyy-MM-dd')
             item_data = QTableWidgetItem(data_obj.toString('dd/MM/yyyy'))
             
-            # Armazena a data original para a funcionalidade de clique duplo
             item_data.setData(Qt.UserRole, res)
 
             self.tabela_resultados.setItem(i, 0, item_data)
@@ -1337,7 +1496,6 @@ class DialogoResultadosBusca(QDialog):
         
         data_do_agendamento = QDate.fromString(str(dados_agendamento['DATA_VENCIMENTO']), 'yyyy-MM-dd')
 
-        # Abre a janela do dia correspondente
         dialog = DayViewDialog(data_do_agendamento, self.usuario_logado, self.parent())
         dialog.exec_()
 
@@ -1656,8 +1814,6 @@ class RelatorioDialog(QDialog):
                     export.exportar_logs_csv(dados, nome_arquivo)
         self.accept()
 
-# main.py - Adicione esta classe inteira no seu arquivo
-
 class DialogoSobre(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1667,11 +1823,10 @@ class DialogoSobre(QDialog):
         layout = QVBoxLayout(self)
 
         self.browser = QTextBrowser()
-        self.browser.setOpenExternalLinks(True) # Para futuros links
+        self.browser.setOpenExternalLinks(True)
         layout.addWidget(self.browser)
 
-        # --- CONTEÚDO DA DOCUMENTAÇÃO ---
-        # Usamos HTML para formatar o texto
+        # --- CONTEÚDO DA DOCUMENTAÇÃO ATUALIZADO ---
         documentacao_html = f"""
             <h1>Agendador de Sintegras - Versão {VERSAO_ATUAL}</h1>
             <p>Este é um guia completo sobre como utilizar todas as funcionalidades do sistema.</p>
@@ -1679,64 +1834,50 @@ class DialogoSobre(QDialog):
 
             <h2>Tela Principal (Calendário)</h2>
             <ul>
-                <li><b>Visualização:</b> A tela principal mostra o calendário do mês. Cada dia exibe a contagem de agendamentos e uma cor baseada no status do primeiro agendamento do dia.</li>
-                <li><b>Cores dos Dias:</b>
-                    <ul>
-                        <li><b>Verde:</b> Dia normal sem agendamentos.</li>
-                        <li><b>Laranja:</b> Fim de semana.</li>
-                        <li><b>Roxo:</b> Feriado.</li>
-                        <li><b>Outras cores:</b> Indicam que há agendamentos, com a cor do status predominante.</li>
-                    </ul>
-                </li>
+                <li><b>Visualização:</b> A tela principal mostra o calendário do mês. Cada dia exibe a contagem de agendamentos planejados.</li>
+                <li><b>Dashboard:</b> O painel no topo exibe estatísticas rápidas do mês atual, como a porcentagem de clientes atendidos e o total de retificações.</li>
                 <li><b>Interação:</b>
                     <ul>
                         <li><b>Clique Duplo:</b> Abre a visão detalhada da agenda daquele dia.</li>
-                        <li><b>Clique Direito:</b> Permite marcar ou desmarcar um dia como feriado.</li>
+                        <li><b>Clique Direito:</b> Permite marcar ou desmarcar um dia como feriado (Nacional ou Municipal). Marcações de feriados agora são permanentes.</li>
                     </ul>
                 </li>
-                <li><b>Dashboard:</b> O painel no topo exibe estatísticas rápidas do mês atual, como a porcentagem de clientes atendidos e o total de retificações.</li>
             </ul>
             <hr>
 
-            <h2>Agendamentos</h2>
-            <p>Na janela de um dia específico (aberta com clique duplo), você pode gerenciar os agendamentos hora a hora.</p>
+            <h2>Solicitados / Não Agendados</h2>
             <ul>
-                <li><b>Criar:</b> Dê um clique duplo em um horário vago para abrir a janela de criação de agendamento.</li>
-                <li><b>Editar:</b> Selecione um agendamento existente e clique em "Editar" (ou dê um clique duplo nele).</li>
-                <li><b>Campos:</b>
-                    <ul>
-                        <li><b>Cliente:</b> Comece a digitar o nome para filtrar e selecionar. O campo inicia vazio por padrão.</li>
-                        <li><b>Status:</b> Define o estado atual do agendamento (Pendente, Feito, etc.).</li>
-                        <li><b>Responsável:</b> Preenchido automaticamente com o seu usuário e não pode ser alterado.</li>
-                        <li><b>Ações:</b> Use os botões "Copiar Email/Local" e "Copiar Rascunho" para agilizar seu trabalho.</li>
-                    </ul>
-                </li>
+                <li>Acessível pelo botão destacado na tela principal, esta área é dedicada a gerenciar atendimentos que não foram planejados no calendário (chamados de última hora, encaixes, etc.).</li>
+                <li>Funciona de forma independente do calendário principal, mas utiliza os mesmos clientes e status, mantendo os relatórios centralizados.</li>
             </ul>
             <hr>
 
             <h2>Gerenciamento de Clientes</h2>
-            <p>Acessível pelo botão "Gerenciar Clientes" na tela principal.</p>
+            <p>Acessível pelo botão "Gerenciar Clientes".</p>
             <ul>
-                <li><b>Adicionar/Editar/Excluir:</b> Funções padrão para gerenciar sua base de clientes.</li>
-                <li><b>Telefones:</b> É possível cadastrar até 2 telefones por cliente no formato (xx) xxxxx-xxxx.</li>
-                <li><b>Verificar Pendentes:</b> Mostra uma lista de todos os clientes que ainda não tiveram um agendamento no mês atual.</li>
-                <li><b>Verificar Inativos:</b> Gera um relatório de clientes que não agendam há 3 meses ou mais.</li>
-                <li><b>Importar de XLSX:</b> Permite importar uma lista de clientes a partir de uma planilha Excel.</li>
+                <li><b>Agendamento Recorrente:</b> Ao adicionar ou editar um cliente, você pode criar agendamentos automáticos para os próximos meses.</li>
+                <li><b>Lógica Inteligente de Recorrência:</b>
+                    <ul>
+                        <li>Se a data calculada cair em um <b>Sábado, Domingo ou Feriado Nacional</b>, o sistema automaticamente busca o próximo dia útil.</li>
+                        <li>Se o horário solicitado no dia útil já estiver <b>ocupado</b>, o sistema busca o próximo horário livre disponível no mesmo dia.</li>
+                        <li>Se não houver mais horários livres no dia, o sistema avança para o próximo dia útil com vagas.</li>
+                    </ul>
+                </li>
+                <li><b>Verificar Pendentes e Inativos:</b> Gere relatórios rápidos para ver quem ainda não foi agendado no mês ou quem não agenda há mais de 3 meses.</li>
             </ul>
             <hr>
             
             <h2>Outras Funcionalidades</h2>
             <ul>
-                <li><b>Busca Rápida:</b> A barra de busca na parte inferior da tela principal permite encontrar agendamentos por nome de cliente, responsável ou palavras nas observações.</li>
-                <li><b>Gerenciar Status:</b> Permite criar, editar ou excluir os status de agendamento e suas cores correspondentes.</li>
-                <li><b>Gerar Relatório:</b> Permite exportar relatórios detalhados de agendamentos ou logs de atividade (quem fez o quê) para PDF ou CSV.</li>
-                <li><b>Configurações:</b> Permite ajustar as configurações de conexão do banco de dados (local ou remoto) e os horários de trabalho. O acesso é protegido pela senha do usuário 'admin'.</li>
+                <li><b>Busca Rápida:</b> A barra de busca na parte inferior permite encontrar agendamentos em todo o sistema por nome de cliente, responsável ou palavras nas observações.</li>
+                <li><b>Gerar Relatório:</b> Permite exportar relatórios detalhados de agendamentos ou logs de atividade para PDF ou CSV.</li>
+                <li><b>Configurações (Acesso Restrito):</b> Permite ajustar as configurações de conexão do banco (local/remoto) e os horários de trabalho. O acesso é protegido pela senha do usuário 'admin'.</li>
             </ul>
             <hr>
             
             <h2>Atalhos de Teclado</h2>
             <ul>
-                <li><b>F3 (na janela de Clientes):</b> Abre a tela de análise de performance de clientes, com estatísticas e rankings.</li>
+                <li><b>F3 (na janela de Clientes):</b> Abre a tela de análise de performance de clientes.</li>
             </ul>
         """
         self.browser.setHtml(documentacao_html)
@@ -2009,6 +2150,7 @@ class CalendarWindow(QMainWindow):
                 widget.setParent(None)
         year = self.current_date.year
         month = self.current_date.month
+        self.feriados = database.get_feriados_do_mes(year, month)
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
         stats = database.get_estatisticas_mensais(year, month)
         total_clientes = database.get_total_clientes()
@@ -2049,6 +2191,12 @@ class CalendarWindow(QMainWindow):
                     cell.clicked.connect(self.open_day_view)
                     self.calendar_grid.addWidget(cell, week_num, day_num)
         self._atualizar_sugestoes()
+
+
+    def abrir_tela_solicitados(self):
+        dialog = DialogoSolicitados(self.usuario_atual, self)
+        dialog.exec_()
+        self.populate_calendar() # Atualiza o dashboard caso algo tenha sido concluído
 
     def setup_ui(self):
             nav_layout = QHBoxLayout()
@@ -2131,15 +2279,19 @@ class CalendarWindow(QMainWindow):
             relatorio_btn = QPushButton("Gerar Relatório")
             relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
             
+            solicitados_btn = QPushButton("Solicitados / Não Agendados")
+            solicitados_btn.setStyleSheet("background-color: #ffc107; color: black;")
+
             # Adicionando os botões na ordem correta
             action_layout.addWidget(config_btn)
             action_layout.addWidget(sobre_btn) # Botão "Sobre" adicionado aqui
             action_layout.addStretch() 
+            action_layout.addWidget(solicitados_btn)
             action_layout.addWidget(clientes_btn)
             action_layout.addWidget(status_btn)
             action_layout.addWidget(usuarios_btn)
             action_layout.addWidget(relatorio_btn)
-            
+            solicitados_btn.clicked.connect(self.abrir_tela_solicitados)
             self.main_layout.addLayout(action_layout)
 
     def _atualizar_completer_busca(self):
