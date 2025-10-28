@@ -106,51 +106,91 @@ def criar_generator_e_trigger(cur, tabela):
         END
         """)
 
+def coluna_existe(cur, nome_tabela, nome_coluna):
+    """Verifica se uma coluna existe em uma tabela."""
+    cur.execute("""
+        SELECT 1
+        FROM RDB$RELATION_FIELDS
+        WHERE RDB$RELATION_NAME = ? AND RDB$FIELD_NAME = ?
+    """, (nome_tabela.upper(), nome_coluna.upper()))
+    return cur.fetchone() is not None
+
 def iniciar_db():
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
         
-        # --- ETAPA 1: CRIAÇÃO DE TABELAS ---
+        # --- ETAPA 1: CRIAÇÃO E ATUALIZAÇÃO DE TABELAS ---
+
+        # Tabela USUARIOS
         if not tabela_existe(cur, 'USUARIOS'):
             print("🆕 Criando tabela USUARIOS...")
-            cur.execute("CREATE TABLE USUARIOS (ID INTEGER NOT NULL PRIMARY KEY, USERNAME VARCHAR(50) UNIQUE NOT NULL, PASSWORD_HASH VARCHAR(64) NOT NULL)")
+            cur.execute("CREATE TABLE USUARIOS (ID INTEGER NOT NULL PRIMARY KEY, USERNAME VARCHAR(50) UNIQUE NOT NULL, PASSWORD_HASH VARCHAR(64) NOT NULL, IS_ADMIN SMALLINT DEFAULT 0 NOT NULL)")
             criar_generator_e_trigger(cur, 'USUARIOS')
         
+        if not coluna_existe(cur, 'USUARIOS', 'IS_ADMIN'):
+            print("🔧 Atualizando tabela USUARIOS: Adicionando coluna IS_ADMIN...")
+            cur.execute("ALTER TABLE USUARIOS ADD IS_ADMIN SMALLINT DEFAULT 0 NOT NULL")
+            conn.commit()
+
+        # Tabela STATUS (sem alterações)
         if not tabela_existe(cur, 'STATUS'):
             print("🆕 Criando tabela STATUS...")
             cur.execute("CREATE TABLE STATUS (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(50) UNIQUE NOT NULL, COR_HEX VARCHAR(10) NOT NULL)")
             criar_generator_e_trigger(cur, 'STATUS')
 
-        # ... (as outras verificações de tabelas continuam aqui, sem alteração) ...
+        # Tabela CLIENTES (sem alterações)
         if not tabela_existe(cur, 'CLIENTES'):
             cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
             criar_generator_e_trigger(cur, 'CLIENTES')
+
+        # Tabela ENTREGAS
         if not tabela_existe(cur, 'ENTREGAS'):
             cur.execute("""CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY,DATA_VENCIMENTO DATE NOT NULL,HORARIO VARCHAR(10) NOT NULL,STATUS_ID INTEGER,CLIENTE_ID INTEGER NOT NULL,RESPONSAVEL VARCHAR(150),OBSERVACOES BLOB SUB_TYPE TEXT,IS_RETIFICACAO SMALLINT DEFAULT 0,TIPO_ATENDIMENTO VARCHAR(20) DEFAULT 'AGENDADO' NOT NULL,FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL,FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)""")
             criar_generator_e_trigger(cur, 'ENTREGAS')
+            
+        # ======================================================================
+        # INÍCIO DA CORREÇÃO - Adicione este bloco
+        # ======================================================================
+        # --- Verificação para atualizar a tabela ENTREGAS de bancos antigos ---
+        if not coluna_existe(cur, 'ENTREGAS', 'TIPO_ATENDIMENTO'):
+            print("🔧 Atualizando tabela ENTREGAS: Adicionando coluna TIPO_ATENDIMENTO...")
+            cur.execute("ALTER TABLE ENTREGAS ADD TIPO_ATENDIMENTO VARCHAR(20) DEFAULT 'AGENDADO' NOT NULL")
+            conn.commit() # Aplica a alteração da estrutura
+        # ======================================================================
+        # FIM DA CORREÇÃO
+        # ======================================================================
+
+        # Tabela LOGS (sem alterações)
         if not tabela_existe(cur, 'LOGS'):
             cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
             criar_generator_e_trigger(cur, 'LOGS')
+
+        # Tabela FERIADOS (sem alterações)
         if not tabela_existe(cur, 'FERIADOS'):
             print("📅 Criando tabela de Feriados...")
             cur.execute("CREATE TABLE FERIADOS (ID INTEGER NOT NULL PRIMARY KEY, DATA DATE NOT NULL UNIQUE, TIPO VARCHAR(20) NOT NULL)")
             criar_generator_e_trigger(cur, 'FERIADOS')
-        conn.commit()
+
+        conn.commit() # Salva todas as alterações de estrutura
+
+        # --- ETAPA 2: INSERÇÃO DE DADOS PADRÃO ---
+        
+        # Insere o usuário 'admin' se a tabela estiver vazia
         cur.execute("SELECT COUNT(*) FROM USUARIOS")
         if cur.fetchone()[0] == 0:
             print("👤 Inserindo usuário 'admin' padrão...")
             senha_hash = hashlib.sha256('admin'.encode('utf-8')).hexdigest()
-            cur.execute("INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH) VALUES (?, ?)", ('admin', senha_hash))
+            cur.execute("INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH, IS_ADMIN) VALUES (?, ?, ?)", ('admin', senha_hash, 1))
             
+        # Insere os status padrão se a tabela estiver vazia
         cur.execute("SELECT COUNT(*) FROM STATUS")
         if cur.fetchone()[0] == 0:
             print("🎨 Inserindo status padrão...")
             status_padrao = [('Pendente', '#ffc107'), ('Feito e enviado', '#28a745'), ('Feito', '#007bff'), ('Retificado', '#17a2b8'), ('Houve Algum Erro', '#dc3545'), ('Chamado', '#6f42c1'), ('Remarcado', '#fd7e14'), ('Realocado', '#6c757d')]
             cur.executemany("INSERT INTO STATUS (NOME, COR_HEX) VALUES (?, ?)", status_padrao)
         
-        # COMMIT FINAL: Salva os dados inseridos.
         conn.commit()
         print("✅ Banco de dados verificado e inicializado com sucesso!")
 
@@ -275,7 +315,8 @@ def is_dia_invalido(data_qdate):
 #==============================================================================
 def verificar_usuario(username, password):
     senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    sql = "SELECT ID, USERNAME FROM USUARIOS WHERE USERNAME = ? AND PASSWORD_HASH = ?"
+    # Adicionamos IS_ADMIN ao SELECT
+    sql = "SELECT ID, USERNAME, IS_ADMIN FROM USUARIOS WHERE USERNAME = ? AND PASSWORD_HASH = ?" # <-- ALTERADO
     conn = None
     try:
         conn = conectar()
@@ -297,7 +338,8 @@ def listar_usuarios():
         if conn: conn.close()
         
 def get_usuario_por_nome(username):
-    sql = "SELECT ID, USERNAME FROM USUARIOS WHERE USERNAME = ?"
+    # Adicionamos IS_ADMIN ao SELECT
+    sql = "SELECT ID, USERNAME, IS_ADMIN FROM USUARIOS WHERE USERNAME = ?" # <-- ALTERADO
     conn = None
     try:
         conn = conectar()
@@ -311,31 +353,39 @@ def verificar_senha_usuario_atual(username, password):
     usuario = verificar_usuario(username, password)
     return usuario is not None
 
-def criar_usuario(username, password, usuario_logado):
+def criar_usuario(username, password, is_admin, usuario_logado): # <-- NOVO PARÂMETRO
     if get_usuario_por_nome(username): return False
     senha_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-    sql = "INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH) VALUES (?, ?)"
+    # Adicionamos IS_ADMIN ao INSERT
+    sql = "INSERT INTO USUARIOS (USERNAME, PASSWORD_HASH, IS_ADMIN) VALUES (?, ?, ?)" # <-- ALTERADO
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (username, senha_hash))
+        cur.execute(sql, (username, senha_hash, 1 if is_admin else 0)) # <-- ALTERADO
         conn.commit()
-        registrar_log(usuario_logado, "CRIAR_USUARIO", f"Usuário '{username}' criado.")
+        detalhes = f"Usuário '{username}' criado."
+        if is_admin:
+            detalhes += " (Como Administrador)"
+        registrar_log(usuario_logado, "CRIAR_USUARIO", detalhes)
         return True
     finally:
         if conn: conn.close()
 
-def atualizar_usuario(user_id, novo_username, nova_senha, usuario_logado):
+def atualizar_usuario(user_id, novo_username, nova_senha, is_admin, usuario_logado): # <-- NOVO PARÂMETRO
     senha_hash = hashlib.sha256(nova_senha.encode('utf-8')).hexdigest()
-    sql = "UPDATE USUARIOS SET USERNAME = ?, PASSWORD_HASH = ? WHERE ID = ?"
+    # Adicionamos IS_ADMIN ao UPDATE
+    sql = "UPDATE USUARIOS SET USERNAME = ?, PASSWORD_HASH = ?, IS_ADMIN = ? WHERE ID = ?" # <-- ALTERADO
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
-        cur.execute(sql, (novo_username, senha_hash, user_id))
+        cur.execute(sql, (novo_username, senha_hash, 1 if is_admin else 0, user_id)) # <-- ALTERADO
         conn.commit()
-        registrar_log(usuario_logado, "ATUALIZAR_USUARIO", f"Usuário ID {user_id} atualizado para '{novo_username}'.")
+        detalhes = f"Usuário ID {user_id} atualizado para '{novo_username}'."
+        if is_admin:
+            detalhes += " (Status de Administrador Concedido)"
+        registrar_log(usuario_logado, "ATUALIZAR_USUARIO", detalhes)
     finally:
         if conn: conn.close()
 
@@ -354,6 +404,23 @@ def deletar_usuario(user_id, usuario_logado):
     finally:
         if conn: conn.close()
 
+def get_admin_count():
+    """
+    Conta e retorna o número total de usuários que são administradores.
+    """
+    sql = "SELECT COUNT(ID) FROM USUARIOS WHERE IS_ADMIN = 1"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql)
+        # Retorna o primeiro (e único) resultado da contagem
+        return cur.fetchone()[0]
+    except fdb.Error as e:
+        print(f"Erro ao contar administradores: {e}")
+        return 0 # Em caso de erro, retorna 0 para segurança
+    finally:
+        if conn: conn.close()
 #==============================================================================
 # CLIENTES
 #==============================================================================
@@ -615,6 +682,59 @@ def criar_agendamentos_recorrentes(agendamentos_para_criar, usuario_logado):
 
     conn.close()
     registrar_log(usuario_logado, "CRIAR_RECORRENCIA", f"Criados {len(agendamentos_para_criar)} agendamentos recorrentes para o cliente ID {cliente_id}.")
+
+def limpar_agendamentos_futuros_cliente(cliente_id, usuario_logado):
+    """
+    Exclui todos os agendamentos de um cliente a partir da data atual (inclusive).
+    É usado para limpar a agenda de um cliente sem afetar o histórico.
+    """
+    # A condição DATA_VENCIMENTO >= CURRENT_DATE garante que apenas agendamentos
+    # de hoje em diante sejam removidos.
+    sql = "DELETE FROM ENTREGAS WHERE CLIENTE_ID = ? AND DATA_VENCIMENTO >= CURRENT_DATE"
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (cliente_id,))
+        conn.commit()
+        
+        # Registra no log quantos agendamentos foram removidos para auditoria
+        if cur.rowcount > 0:
+            registrar_log(usuario_logado, "LIMPEZA_AGENDAMENTOS", f"{cur.rowcount} agendamentos futuros do cliente ID {cliente_id} foram removidos.")
+        return cur.rowcount # Retorna o número de linhas afetadas
+            
+    except fdb.Error as e:
+        print(f"Erro ao limpar agendamentos futuros do cliente: {e}")
+        if conn:
+            conn.rollback()
+        return 0
+    finally:
+        if conn: conn.close()
+
+def get_contagem_solicitados_do_mes(ano, mes):
+    """
+    Busca apenas a CONTAGEM de atendimentos do tipo 'SOLICITADO' para um mês/ano.
+    É mais rápido do que buscar todos os dados.
+    """
+    sql = """
+        SELECT COUNT(ID)
+        FROM ENTREGAS
+        WHERE EXTRACT(YEAR FROM DATA_VENCIMENTO) = ?
+        AND EXTRACT(MONTH FROM DATA_VENCIMENTO) = ?
+        AND TIPO_ATENDIMENTO = 'SOLICITADO'
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        # cur.fetchone()[0] pega o primeiro (e único) resultado da contagem.
+        return cur.fetchone()[0]
+    except fdb.Error as e:
+        print(f"Erro ao contar atendimentos solicitados: {e}")
+        return 0
+    finally:
+        if conn: conn.close()
 
 #==============================================================================
 # FUNÇÕES PARA O DASHBOARD E RELATÓRIOS

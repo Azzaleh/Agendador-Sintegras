@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.6"
+VERSAO_ATUAL = "1.7"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -202,25 +202,20 @@ class DialogoCliente(QDialog):
         layout = QVBoxLayout(self)
         form_layout = QFormLayout()
         
-        # --- INÍCIO DA ALTERAÇÃO ---
         self.nome_edit = QLineEdit()
         self.tipo_envio_combo = QComboBox()
         self.tipo_envio_combo.addItems(["Nosso", "Deles"])
-        self.contato_edit = QLineEdit() # Email/Local
-        
-        # Novos campos de telefone com máscara de entrada
+        self.contato_edit = QLineEdit()
         self.telefone1_edit = QLineEdit()
         self.telefone1_edit.setInputMask("(00) 00000-0000")
         self.telefone2_edit = QLineEdit()
         self.telefone2_edit.setInputMask("(00) 00000-0000")
-
         self.gera_recibo_check = QCheckBox("Gera Recibo?")
         self.conta_xmls_check = QCheckBox("Contar XMLs?")
         self.nivel_edit = QLineEdit()
         self.detalhes_edit = QTextEdit()
         self.detalhes_edit.setPlaceholderText("Detalhes adicionais sobre o cliente...")
-        self.detalhes_edit.setFixedHeight(80) # Diminui a altura da caixa de observações
-
+        self.detalhes_edit.setFixedHeight(80)
         self.num_computadores_spin = QSpinBox()
         self.num_computadores_spin.setRange(1, 9999)
         self.num_computadores_spin.setValue(1)
@@ -235,18 +230,16 @@ class DialogoCliente(QDialog):
         form_layout.addRow("", self.conta_xmls_check)
         form_layout.addRow("Nível:", self.nivel_edit)
         form_layout.addRow("Outros Detalhes:", self.detalhes_edit)
+        
         self.recorrencia_group = QGroupBox("Agendamento Recorrente (Opcional)")
         self.recorrencia_group.setCheckable(True)
         self.recorrencia_group.setChecked(False)
-
         recorrencia_layout = QFormLayout(self.recorrencia_group)
-        
         self.dia_recorrencia_spin = QSpinBox()
         self.dia_recorrencia_spin.setRange(1, 31)
         self.hora_recorrencia_edit = QTimeEdit()
         self.hora_recorrencia_edit.setDisplayFormat("HH:mm")
         self.hora_recorrencia_edit.setTime(QTime(9, 0))
-
         periodo_layout = QHBoxLayout()
         self.radio_1_mes = QRadioButton("1 mês")
         self.radio_4_meses = QRadioButton("4 meses")
@@ -257,29 +250,66 @@ class DialogoCliente(QDialog):
         periodo_layout.addWidget(self.radio_4_meses)
         periodo_layout.addWidget(self.radio_8_meses)
         periodo_layout.addWidget(self.radio_12_meses)
-
         recorrencia_layout.addRow("Agendar todo dia:", self.dia_recorrencia_spin)
         recorrencia_layout.addRow("Às:", self.hora_recorrencia_edit)
         recorrencia_layout.addRow("Para os próximos:", periodo_layout)
         
         layout.addLayout(form_layout)
         layout.addWidget(self.recorrencia_group)
-
+        
         botoes_layout = QHBoxLayout()
-
-        botoes_layout = QHBoxLayout()
+        self.limpar_btn = QPushButton("Limpar Agendamentos Futuros")
+        self.limpar_btn.setStyleSheet("background-color: #dc3545; color: white;")
         self.salvar_btn = QPushButton("Salvar")
         self.cancelar_btn = QPushButton("Cancelar")
+        botoes_layout.addWidget(self.limpar_btn)
         botoes_layout.addStretch()
         botoes_layout.addWidget(self.salvar_btn)
         botoes_layout.addWidget(self.cancelar_btn)
         layout.addLayout(botoes_layout)
+
         self.salvar_btn.clicked.connect(self.salvar)
         self.cancelar_btn.clicked.connect(self.reject)
-        if self.cliente_id:
-            self.carregar_dados() 
+        self.limpar_btn.clicked.connect(self.limpar_agendamentos)
 
+        if self.cliente_id:
+            self.carregar_dados()
+        
+        self.limpar_btn.setVisible(self.cliente_id is not None)
+        
     def carregar_dados(self): pass # A lógica de carga fica em JanelaClientes.editar_cliente
+
+    def limpar_agendamentos(self):
+        """
+        Limpa os agendamentos futuros para o cliente que está sendo editado.
+        """
+        # A lógica foi adaptada para usar os dados da própria janela de diálogo
+        if not self.cliente_id:
+            QMessageBox.critical(self, "Erro", "Nenhum cliente selecionado para esta operação.")
+            return
+
+        cliente_nome = self.nome_edit.text()
+
+        reply = QMessageBox.question(self, 
+                                     "Confirmar Limpeza de Agendamentos", 
+                                     f"Tem certeza que deseja excluir TODOS os agendamentos de hoje e do futuro para o cliente '{cliente_nome}'?\n\nO histórico de agendamentos passados NÃO será afetado.",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            usuario_nome = self.usuario_logado['USERNAME']
+            try:
+                removidos = database.limpar_agendamentos_futuros_cliente(self.cliente_id, usuario_nome)
+                if removidos > 0:
+                    QMessageBox.information(self, "Sucesso", f"{removidos} agendamentos futuros foram removidos com sucesso!")
+                else:
+                    QMessageBox.information(self, "Aviso", "Nenhum agendamento futuro encontrado para este cliente.")
+                
+                # self.main_window é a janela principal (CalendarWindow), que precisa ser atualizada
+                self.main_window.populate_calendar()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Ocorreu um erro ao limpar os agendamentos:\n{e}")
+    # ======================================================================
 
     def salvar(self):
         nome = self.nome_edit.text().strip()
@@ -741,7 +771,7 @@ class JanelaClientes(QDialog):
         self.busca_edit.textChanged.connect(self.filtrar_tabela)
         pendentes_btn.clicked.connect(self.verificar_pendentes)
         inativos_btn.clicked.connect(self.verificar_inativos) # Conexão para o novo botão
-        # --- FIM DA CORREÇÃO ---
+
         
         self.carregar_clientes()
 
@@ -1259,7 +1289,8 @@ class EntregaDialog(QDialog):
         if not self.cliente_combo.isEnabled(): return
         nome_cliente = self.cliente_combo.currentText()
         nome_status = self.status_combo.currentText()
-        data_str = self.date.toString("MM/yyyy")
+        data_referente = self.date.addMonths(-1)
+        data_str = data_referente.toString("MM/yyyy")
         if nome_status and nome_status.lower() == 'retificado':
             texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
         else:
@@ -1903,18 +1934,35 @@ class DialogoSobre(QDialog):
         layout.addLayout(botoes_layout)
 
 class DialogoUsuario(QDialog):
-    def __init__(self, parent=None, usuario=None):
+    def __init__(self, usuario_logado, parent=None, usuario=None):
         super().__init__(parent)
         self.setWindowTitle("Usuário")
         self.usuario = usuario
+        self.usuario_logado = usuario_logado
+        
         layout = QFormLayout(self)
         self.username_edit = QLineEdit()
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.Password)
+        
+        # Cria o checkbox de administrador
+        self.admin_check = QCheckBox("É Administrador?")
+
         if usuario:
             self.username_edit.setText(usuario['USERNAME'])
+            # Define o estado do checkbox com base nos dados do usuário
+            if usuario.get('IS_ADMIN', 0) == 1:
+                self.admin_check.setChecked(True)
+        
         layout.addRow("Usuário:", self.username_edit)
         layout.addRow("Senha:", self.password_edit)
+        layout.addRow(self.admin_check)
+        
+        # Apenas administradores podem promover outros usuários
+        if not self.usuario_logado.get('IS_ADMIN'):
+            self.admin_check.setEnabled(False)
+            self.admin_check.setToolTip("Apenas administradores podem alterar este status.")
+
         botoes = QHBoxLayout()
         salvar_btn = QPushButton("Salvar")
         salvar_btn.clicked.connect(self.accept)
@@ -1923,8 +1971,10 @@ class DialogoUsuario(QDialog):
         botoes.addWidget(salvar_btn)
         botoes.addWidget(cancelar_btn)
         layout.addRow(botoes)
+
     def get_dados(self):
-        return self.username_edit.text(), self.password_edit.text()
+        # Retorna os dados, incluindo o status de administrador
+        return self.username_edit.text(), self.password_edit.text(), self.admin_check.isChecked()
 
 class ConfirmacaoSenhaDialog(QDialog):
     def __init__(self, parent=None):
@@ -1984,7 +2034,7 @@ class JanelaUsuarios(QDialog):
             self.tabela.setItem(i, 0, item)
 
     def adicionar_usuario(self):
-        dialog = DialogoUsuario(self)
+        dialog = DialogoUsuario(self.usuario_logado, self)
         if dialog.exec_() == QDialog.Accepted:
             username, password = dialog.get_dados()
             if username and password:
@@ -2005,13 +2055,20 @@ class JanelaUsuarios(QDialog):
         if not usuario_obj:
             QMessageBox.critical(self, "Erro", "Usuário não encontrado no banco de dados."); return
 
+        # 1. Primeiro, verificamos se o usuário logado é o 'admin'.
+        #    Esta é a única pessoa que pode editar outros usuários.
+        if not self.usuario_logado.get('IS_ADMIN'):
+            QMessageBox.warning(self, "Acesso Restrito", "Apenas administradores podem editar outros usuários.")
+            return
+
+        # 2. Se for o admin, então pedimos a senha dele para confirmar a ação.
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             administrador_logado = self.usuario_logado['USERNAME']
 
             if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
-                dialog = DialogoUsuario(self, usuario=usuario_obj)
+                dialog = DialogoUsuario(self.usuario_logado, self, usuario=usuario_obj)
                 if dialog.exec_() == QDialog.Accepted:
                     novo_username, nova_senha = dialog.get_dados()
                     if not nova_senha:
@@ -2036,14 +2093,34 @@ class JanelaUsuarios(QDialog):
         if not usuario_para_excluir:
             QMessageBox.critical(self, "Erro", "Não foi possível encontrar o usuário no banco de dados."); return
 
-        if usuario_para_excluir['ID'] == 1:
-            QMessageBox.warning(self, "Ação Proibida", "O usuário administrador principal não pode ser excluído."); return
+        # ======================================================================
+        # INÍCIO DA LÓGICA DE VERIFICAÇÃO ATUALIZADA
+        # ======================================================================
 
+        # 1. Proíbe que o usuário logado se auto-exclua.
         if usuario_para_excluir['ID'] == self.usuario_logado['ID']:
             QMessageBox.warning(self, "Ação Proibida", "Você não pode excluir seu próprio usuário."); return
+        
+        # 2. Verifica se o usuário logado é um administrador (único que pode excluir).
+        if not self.usuario_logado.get('IS_ADMIN'):
+            QMessageBox.warning(self, "Acesso Restrito", "Apenas administradores podem excluir outros usuários.")
+            return
+            
+        # 3. Regra de segurança: Se o usuário a ser excluído for um admin,
+        #    verifica se ele é o último que resta.
+        if usuario_para_excluir.get('IS_ADMIN'):
+            admin_count = database.get_admin_count()
+            if admin_count <= 1:
+                QMessageBox.warning(self, "Ação Proibida", "Não é possível excluir o único administrador do sistema.\nPromova outro usuário a administrador antes de excluir este.")
+                return
 
+        # ======================================================================
+        # FIM DA LÓGICA DE VERIFICAÇÃO ATUALIZADA
+        # ======================================================================
+
+        # 4. Se todas as verificações passarem, pede a senha do admin para confirmar.
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
-        if dialogo_confirmacao.exec_() == QDialog.Accepted:
+        if dialogo_confirmacao.exec() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             administrador_logado = self.usuario_logado['USERNAME']
 
@@ -2161,6 +2238,15 @@ class CalendarWindow(QMainWindow):
                 widget.setParent(None)
         year = self.current_date.year
         month = self.current_date.month
+        try:
+            contagem_solicitados = database.get_contagem_solicitados_do_mes(year, month)
+            if contagem_solicitados > 0:
+                self.solicitados_btn.setStyleSheet("background-color: #ffc107; color: black;")
+            else:
+                self.solicitados_btn.setStyleSheet("")
+        except Exception as e:
+            print(f"Erro ao atualizar a cor do botão de solicitados: {e}")
+            self.solicitados_btn.setStyleSheet("")
         self.feriados = database.get_feriados_do_mes(year, month)
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
         stats = database.get_estatisticas_mensais(year, month)
@@ -2203,11 +2289,10 @@ class CalendarWindow(QMainWindow):
                     self.calendar_grid.addWidget(cell, week_num, day_num)
         self._atualizar_sugestoes()
 
-
     def abrir_tela_solicitados(self):
         dialog = DialogoSolicitados(self.usuario_atual, self)
         dialog.exec_()
-        self.populate_calendar() # Atualiza o dashboard caso algo tenha sido concluído
+        self.populate_calendar()
 
     def setup_ui(self):
             nav_layout = QHBoxLayout()
@@ -2270,7 +2355,6 @@ class CalendarWindow(QMainWindow):
             self.busca_global_btn.clicked.connect(self.realizar_busca_global)
             self.busca_global_edit.returnPressed.connect(self.realizar_busca_global)
             
-            # --- INÍCIO DA CORREÇÃO ---
             action_layout = QHBoxLayout()
             config_btn = QPushButton("Configurações")
             config_btn.clicked.connect(self.abrir_configuracoes)
@@ -2290,27 +2374,23 @@ class CalendarWindow(QMainWindow):
             relatorio_btn = QPushButton("Gerar Relatório")
             relatorio_btn.clicked.connect(self.abrir_dialogo_relatorio)
             
-            solicitados_btn = QPushButton("Solicitados / Não Agendados")
-            solicitados_btn.setStyleSheet("background-color: #ffc107; color: black;")
-
-            # Adicionando os botões na ordem correta
+            self.solicitados_btn = QPushButton("Solicitados / Não Agendados")
+            
             action_layout.addWidget(config_btn)
-            action_layout.addWidget(sobre_btn) # Botão "Sobre" adicionado aqui
+            action_layout.addWidget(sobre_btn)
             action_layout.addStretch() 
-            action_layout.addWidget(solicitados_btn)
+            action_layout.addWidget(self.solicitados_btn)
             action_layout.addWidget(clientes_btn)
             action_layout.addWidget(status_btn)
             action_layout.addWidget(usuarios_btn)
             action_layout.addWidget(relatorio_btn)
-            solicitados_btn.clicked.connect(self.abrir_tela_solicitados)
+            self.solicitados_btn.clicked.connect(self.abrir_tela_solicitados)
             self.main_layout.addLayout(action_layout)
 
     def _atualizar_completer_busca(self):
-    
         try:
             clientes = database.listar_clientes()
             nomes_clientes = [cliente['NOME'] for cliente in clientes if cliente.get('NOME')]
-        
             modelo = QStringListModel()
             modelo.setStringList(nomes_clientes)
             self.completer.setModel(modelo)
@@ -2323,13 +2403,10 @@ class CalendarWindow(QMainWindow):
         if not termo:
             QMessageBox.warning(self, "Busca Inválida", "Por favor, digite algo para buscar.")
             return
-
         resultados = database.buscar_agendamentos_globais(termo)
-
         if not resultados:
             QMessageBox.information(self, "Nenhum Resultado", f"Nenhum agendamento encontrado para o termo '{termo}'.")
         else:
-            # Passa a janela principal (self) como pai para o diálogo
             dialog = DialogoResultadosBusca(resultados, self.usuario_atual, self)
             dialog.exec_()    
 
@@ -2359,19 +2436,10 @@ class CalendarWindow(QMainWindow):
             try:
                 nome_arquivo = f"Calendario-v{nova_versao}.exe"
                 url_download = f"https://github.com/Azzaleh/Agendador-Sintegras/releases/download/v{nova_versao}/{nome_arquivo}"
-                
-                # --- INÍCIO DA CORREÇÃO ---
-                # 1. Descobre o caminho do executável que está rodando
                 pasta_do_executavel = os.path.dirname(sys.executable)
-                
-                # 2. Define o caminho completo para salvar o arquivo na mesma pasta
                 caminho_salvar = os.path.join(pasta_do_executavel, nome_arquivo)
-                # --- FIM DA CORREÇÃO ---
-                
                 from urllib.request import urlretrieve
                 urlretrieve(url_download, caminho_salvar)
-                
-                # Abre o novo instalador/executável e fecha o programa atual
                 subprocess.Popen([caminho_salvar])
                 QApplication.instance().quit()
             except Exception as e:
@@ -2431,17 +2499,15 @@ class CalendarWindow(QMainWindow):
         self.populate_calendar()
 
     def abrir_configuracoes(self):
-        # 1. Verifica se o usuário logado é o administrador principal (ID = 1)
-        if self.usuario_atual['ID'] != 1:
-            QMessageBox.warning(self, "Acesso Restrito", "Apenas o usuário administrador principal pode acessar as configurações.")
+        # Verifica se o usuário logado tem a permissão de administrador
+        if not self.usuario_atual.get('IS_ADMIN'):
+            QMessageBox.warning(self, "Acesso Restrito", "Apenas administradores podem acessar as configurações.")
             return
 
-        # 2. Pede a senha do usuário ATUALMENTE LOGADO
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
             
-            # 3. Verifica a senha do usuário logado, e não de um 'admin' fixo
             if database.verificar_senha_usuario_atual(self.usuario_atual['USERNAME'], senha_digitada):
                 dialog_config = ConfigDialog(self)
                 dialog_config.exec_()
@@ -2455,7 +2521,6 @@ class CalendarWindow(QMainWindow):
         dialog = JanelaUsuarios(self.usuario_atual, self); dialog.exec_()
 
     def abrir_dialogo_sobre(self):
-            """Abre a janela de documentação do sistema."""
             dialog = DialogoSobre(self)
             dialog.exec_()
 
