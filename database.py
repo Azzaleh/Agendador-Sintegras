@@ -619,7 +619,9 @@ def get_entregas_por_dia(data_str):
 def get_solicitados_do_mes(ano, mes):
     sql = """
         SELECT
-            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO, e.TIPO_ATENDIMENTO,
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID,
+            e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO, e.TIPO_ATENDIMENTO,
+            e.DATA_CONCLUSAO, -- <--- COLUNA ADICIONADA AQUI
             c.NOME as NOME_CLIENTE,
             s.NOME as NOME_STATUS, s.COR_HEX
         FROM ENTREGAS e
@@ -637,7 +639,6 @@ def get_solicitados_do_mes(ano, mes):
         return [dict_factory(cur, row) for row in cur.fetchall()]
     finally:
         if conn: conn.close()
-
 def limpar_agendamentos_futuros_pendentes(cliente_id, usuario_logado):
     """
     Exclui todos os agendamentos FUTUROS com status 'Pendente' para um cliente específico.

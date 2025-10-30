@@ -934,10 +934,10 @@ class JanelaClientes(QDialog):
             super().keyPressEvent(event)
 
 class DialogoSolicitados(QDialog):
-    def __init__(self, usuario_logado, date, parent=None): # PARÂMETRO 'date' ADICIONADO
+    def __init__(self, usuario_logado, date, parent=None):
         super().__init__(parent)
         self.usuario_logado = usuario_logado
-        self.date = date # DATA DO CALENDÁRIO É GUARDADA
+        self.date = date
         self.setWindowTitle(f"Atendimentos Solicitados / Nao Agendados ({self.date.strftime('%m/%Y')})")
         self.setMinimumSize(900, 600)
         
@@ -967,17 +967,65 @@ class DialogoSolicitados(QDialog):
         del_btn.clicked.connect(self.excluir_solicitado)
         self.tabela.cellDoubleClicked.connect(self.editar_solicitado)
         
+        # --- INÍCIO DA ALTERAÇÃO (Funcionalidade de Copiar) ---
+        self.tabela.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabela.customContextMenuRequested.connect(self.mostrar_menu_contexto)
+        # --- FIM DA ALTERAÇÃO ---
+        
         self.carregar_dados()
 
+    # --- INÍCIO DA ALTERAÇÃO (Nova Função) ---
+    def mostrar_menu_contexto(self, position):
+        index = self.tabela.indexAt(position)
+        if not index.isValid():
+            return
+
+        item_data = self.tabela.item(index.row(), 0)
+        agendamento = item_data.data(Qt.UserRole) if item_data else None
+
+        if not agendamento:
+            return
+
+        menu = QMenu(self)
+        copiar_action = menu.addAction("Copiar Detalhes do Atendimento")
+        action = menu.exec_(self.tabela.viewport().mapToGlobal(position))
+
+        if action == copiar_action:
+            nome_empresa = agendamento.get('NOME_CLIENTE', 'N/A')
+            # A data vem do próprio agendamento, ao contrário da outra tela
+            data_agendamento_obj = agendamento.get('DATA_VENCIMENTO')
+            data_agendamento = data_agendamento_obj.strftime('%d/%m/%Y') if data_agendamento_obj else 'N/A'
+            horario_agendamento = agendamento.get('HORARIO', 'N/A')
+            status = agendamento.get('NOME_STATUS', 'N/A')
+
+            texto_final = (f"Empresa: {nome_empresa}\n"
+                           f"Data: {data_agendamento}\n"
+                           f"Horário: {horario_agendamento}\n"
+                           f"Status: {status}")
+
+            status_lower = status.lower()
+            if 'feito' in status_lower or 'retificado' in status_lower:
+                data_conclusao_obj = agendamento.get('DATA_CONCLUSAO')
+                if data_conclusao_obj:
+                    data_hora_envio = data_conclusao_obj.strftime('%d/%m/%Y as %H:%M')
+                    texto_final += f"\nConcluido em: {data_hora_envio}"
+                else:
+                    data_hora_envio = datetime.now().strftime('%d/%m/%Y as %H:%M')
+                    texto_final += f"\nConcluido em: {data_hora_envio} (agora)"
+            
+            clipboard = QApplication.clipboard()
+            clipboard.setText(texto_final)
+            QToolTip.showText(self.tabela.viewport().mapToGlobal(position), "Copiado!", self)
+    # --- FIM DA ALTERAÇÃO ---
+
     def carregar_dados(self):
-        # USA A DATA DO CALENDÁRIO EM VEZ DA DATA ATUAL DO SISTEMA
         solicitados = database.get_solicitados_do_mes(self.date.year, self.date.month)
         
         self.tabela.setRowCount(len(solicitados))
         for i, item in enumerate(solicitados):
             data_obj = item['DATA_VENCIMENTO']
             item_data = QTableWidgetItem(data_obj.strftime('%d/%m/%Y'))
-            item_data.setData(Qt.UserRole, item) # Guarda todos os dados na primeira célula
+            item_data.setData(Qt.UserRole, item)
             
             self.tabela.setItem(i, 0, item_data)
             self.tabela.setItem(i, 1, QTableWidgetItem(item['HORARIO']))
@@ -992,12 +1040,11 @@ class DialogoSolicitados(QDialog):
             self.tabela.setItem(i, 5, QTableWidgetItem(item.get('OBSERVACOES', '')))
 
     def adicionar_solicitado(self):
-        # Aqui está a mágica: abrimos a mesma janela de agendamento!
         dialog = EntregaDialog(self.usuario_logado, QDate.currentDate(), parent=self)
         
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
-            horario = QTime.currentTime().toString("HH:mm") # Pega a hora atual para o encaixe
+            horario = QTime.currentTime().toString("HH:mm")
             
             database.adicionar_entrega(
                 QDate.currentDate().toString("yyyy-MM-dd"),
@@ -1008,7 +1055,7 @@ class DialogoSolicitados(QDialog):
                 data['observacoes'],
                 data['is_retificacao'],
                 self.usuario_logado['USERNAME'],
-                tipo_atendimento='SOLICITADO' # AQUI ESTÁ A DIFERENÇA
+                tipo_atendimento='SOLICITADO'
             )
             self.carregar_dados()
 
@@ -1021,26 +1068,24 @@ class DialogoSolicitados(QDialog):
         linha_selecionada = itens_selecionados[0].row()
         dados_atendimento = self.tabela.item(linha_selecionada, 0).data(Qt.UserRole)
         
-        # Reutilizamos a mesma janela de diálogo, passando os dados existentes
         data_do_atendimento = QDate.fromString(str(dados_atendimento['DATA_VENCIMENTO']), 'yyyy-MM-dd')
         dialog = EntregaDialog(self.usuario_logado, data_do_atendimento, entrega_data=dados_atendimento, parent=self)
         
         if dialog.exec_() == QDialog.Accepted:
             novos_dados = dialog.get_data()
             
-            # Chamamos a função de atualizar, passando o tipo 'SOLICITADO'
             database.atualizar_entrega(
                 entrega_id=dados_atendimento['ID'],
-                horario=dados_atendimento['HORARIO'], # Horário não é editável aqui
+                horario=dados_atendimento['HORARIO'],
                 status_id=novos_dados['status_id'],
                 cliente_id=novos_dados['cliente_id'],
                 responsavel=novos_dados['responsavel'],
                 observacoes=novos_dados['observacoes'],
                 is_retificacao=novos_dados['is_retificacao'],
                 usuario_logado=self.usuario_logado['USERNAME'],
-                tipo_atendimento='SOLICITADO' # Mantemos o tipo
+                tipo_atendimento='SOLICITADO'
             )
-            self.carregar_dados() # Atualiza a tabela com os novos dados
+            self.carregar_dados()
 
     def excluir_solicitado(self):
         itens_selecionados = self.tabela.selectedItems()
@@ -1394,6 +1439,7 @@ class DayViewDialog(QDialog):
             horario_agendamento = agendamento.get('HORARIO', 'N/A')
             status = agendamento.get('NOME_STATUS', 'N/A')
 
+            # --- ALTERAÇÃO: A linha "Responsável" foi removida daqui ---
             texto_final = (f"Empresa: {nome_empresa}\n"
                            f"Data: {data_agendamento}\n"
                            f"Horário: {horario_agendamento}\n"
@@ -1401,15 +1447,12 @@ class DayViewDialog(QDialog):
 
             status_lower = status.lower()
             if 'feito' in status_lower or 'retificado' in status_lower:
-                # Pega a data de conclusão do banco de dados
                 data_conclusao_obj = agendamento.get('DATA_CONCLUSAO')
 
                 if data_conclusao_obj:
-                    # Se existir, formata e usa
                     data_hora_envio = data_conclusao_obj.strftime('%d/%m/%Y as %H:%M')
                     texto_final += f"\nConcluido em: {data_hora_envio}"
                 else:
-                    # Se não existir (legado ou erro), usa a data atual como fallback
                     data_hora_envio = datetime.now().strftime('%d/%m/%Y as %H:%M')
                     texto_final += f"\nConcluido em: {data_hora_envio} (agora)"
 
