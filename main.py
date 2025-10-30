@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.7"
+VERSAO_ATUAL = "1.8"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -934,10 +934,11 @@ class JanelaClientes(QDialog):
             super().keyPressEvent(event)
 
 class DialogoSolicitados(QDialog):
-    def __init__(self, usuario_logado, parent=None):
+    def __init__(self, usuario_logado, date, parent=None): # PARÂMETRO 'date' ADICIONADO
         super().__init__(parent)
         self.usuario_logado = usuario_logado
-        self.setWindowTitle("Atendimentos Solicitados / Não Agendados (Mês Atual)")
+        self.date = date # DATA DO CALENDÁRIO É GUARDADA
+        self.setWindowTitle(f"Atendimentos Solicitados / Nao Agendados ({self.date.strftime('%m/%Y')})")
         self.setMinimumSize(900, 600)
         
         layout = QVBoxLayout(self)
@@ -969,8 +970,8 @@ class DialogoSolicitados(QDialog):
         self.carregar_dados()
 
     def carregar_dados(self):
-        hoje = QDate.currentDate()
-        solicitados = database.get_solicitados_do_mes(hoje.year(), hoje.month())
+        # USA A DATA DO CALENDÁRIO EM VEZ DA DATA ATUAL DO SISTEMA
+        solicitados = database.get_solicitados_do_mes(self.date.year, self.date.month)
         
         self.tabela.setRowCount(len(solicitados))
         for i, item in enumerate(solicitados):
@@ -1361,7 +1362,61 @@ class DayViewDialog(QDialog):
         edit_btn.clicked.connect(self.editar_agendamento)
         del_btn.clicked.connect(self.excluir_agendamento)
         self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique)
+        
+        # --- INÍCIO DA ALTERAÇÃO ---
+        # Habilita o menu de contexto personalizado e conecta a uma função
+        self.tabela_agenda.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabela_agenda.customContextMenuRequested.connect(self.mostrar_menu_contexto)
+        # --- FIM DA ALTERAÇÃO ---
+        
         self.carregar_agenda_dia()
+
+
+    # FUNÇÃO PARA GERIR O MENU DO BOTÃO DIREITO
+    def mostrar_menu_contexto(self, position):
+        index = self.tabela_agenda.indexAt(position)
+        if not index.isValid():
+            return
+
+        item_horario = self.tabela_agenda.item(index.row(), 0)
+        agendamento = item_horario.data(Qt.UserRole) if item_horario else None
+
+        if not agendamento:
+            return
+
+        menu = QMenu(self)
+        copiar_action = menu.addAction("Copiar Detalhes do Agendamento")
+        action = menu.exec_(self.tabela_agenda.viewport().mapToGlobal(position))
+
+        if action == copiar_action:
+            nome_empresa = agendamento.get('NOME_CLIENTE', 'N/A')
+            data_agendamento = self.date.toString('dd/MM/yyyy')
+            horario_agendamento = agendamento.get('HORARIO', 'N/A')
+            status = agendamento.get('NOME_STATUS', 'N/A')
+
+            texto_final = (f"Empresa: {nome_empresa}\n"
+                           f"Data: {data_agendamento}\n"
+                           f"Horário: {horario_agendamento}\n"
+                           f"Status: {status}")
+
+            status_lower = status.lower()
+            if 'feito' in status_lower or 'retificado' in status_lower:
+                # Pega a data de conclusão do banco de dados
+                data_conclusao_obj = agendamento.get('DATA_CONCLUSAO')
+
+                if data_conclusao_obj:
+                    # Se existir, formata e usa
+                    data_hora_envio = data_conclusao_obj.strftime('%d/%m/%Y as %H:%M')
+                    texto_final += f"\nConcluido em: {data_hora_envio}"
+                else:
+                    # Se não existir (legado ou erro), usa a data atual como fallback
+                    data_hora_envio = datetime.now().strftime('%d/%m/%Y as %H:%M')
+                    texto_final += f"\nConcluido em: {data_hora_envio} (agora)"
+
+            clipboard = QApplication.clipboard()
+            clipboard.setText(texto_final)
+            QToolTip.showText(self.tabela_agenda.viewport().mapToGlobal(position), "Copiado!", self)
+    # --- FIM DA ALTERAÇÃO ---
 
     def carregar_agenda_dia(self):
         self.tabela_agenda.setRowCount(0)
@@ -2036,9 +2091,11 @@ class JanelaUsuarios(QDialog):
     def adicionar_usuario(self):
         dialog = DialogoUsuario(self.usuario_logado, self)
         if dialog.exec_() == QDialog.Accepted:
-            username, password = dialog.get_dados()
+            # 1. Recebemos os TRÊS valores
+            username, password, is_admin = dialog.get_dados() 
             if username and password:
-                if database.criar_usuario(username, password, self.usuario_logado['USERNAME']):
+                # 2. Passamos o valor 'is_admin' para a função do banco
+                if database.criar_usuario(username, password, is_admin, self.usuario_logado['USERNAME']):
                     QMessageBox.information(self, "Sucesso", "Usuário criado!")
                     self.carregar_usuarios()
                 else:
@@ -2055,13 +2112,10 @@ class JanelaUsuarios(QDialog):
         if not usuario_obj:
             QMessageBox.critical(self, "Erro", "Usuário não encontrado no banco de dados."); return
 
-        # 1. Primeiro, verificamos se o usuário logado é o 'admin'.
-        #    Esta é a única pessoa que pode editar outros usuários.
         if not self.usuario_logado.get('IS_ADMIN'):
             QMessageBox.warning(self, "Acesso Restrito", "Apenas administradores podem editar outros usuários.")
             return
 
-        # 2. Se for o admin, então pedimos a senha dele para confirmar a ação.
         dialogo_confirmacao = ConfirmacaoSenhaDialog(self)
         if dialogo_confirmacao.exec_() == QDialog.Accepted:
             senha_digitada = dialogo_confirmacao.get_senha()
@@ -2070,12 +2124,24 @@ class JanelaUsuarios(QDialog):
             if database.verificar_senha_usuario_atual(administrador_logado, senha_digitada):
                 dialog = DialogoUsuario(self.usuario_logado, self, usuario=usuario_obj)
                 if dialog.exec_() == QDialog.Accepted:
-                    novo_username, nova_senha = dialog.get_dados()
+                    
+                    # --- CORREÇÃO 1: Recebemos os 3 valores ---
+                    novo_username, nova_senha, is_admin = dialog.get_dados()
+                    
                     if not nova_senha:
                         QMessageBox.warning(self, "Senha Obrigatória", "O campo de senha não pode estar vazio ao editar.")
                         return
                     if novo_username and nova_senha:
-                        database.atualizar_usuario(usuario_obj["ID"], novo_username, nova_senha, self.usuario_logado["USERNAME"])
+                        
+                        # --- CORREÇÃO 2: Passamos os 5 parâmetros na ordem correta ---
+                        database.atualizar_usuario(
+                            usuario_obj["ID"], 
+                            novo_username, 
+                            nova_senha, 
+                            is_admin, # O valor que faltava
+                            self.usuario_logado["USERNAME"]
+                        )
+                        
                         QMessageBox.information(self, "Sucesso", "Usuário atualizado!")
                         self.carregar_usuarios()
             else:
@@ -2238,15 +2304,24 @@ class CalendarWindow(QMainWindow):
                 widget.setParent(None)
         year = self.current_date.year
         month = self.current_date.month
+
         try:
-            contagem_solicitados = database.get_contagem_solicitados_do_mes(year, month)
-            if contagem_solicitados > 0:
+            # Chama a nova função para contar apenas os pendentes
+            contagem_pendentes = database.get_contagem_solicitados_pendentes_do_mes(year, month)
+            
+            # A lógica agora se baseia apenas na contagem de pendentes
+            if contagem_pendentes > 0:
                 self.solicitados_btn.setStyleSheet("background-color: #ffc107; color: black;")
+                self.solicitados_btn.setToolTip(f"Existem {contagem_pendentes} atendimentos solicitados pendentes este mês.")
             else:
                 self.solicitados_btn.setStyleSheet("")
+                self.solicitados_btn.setToolTip("Nenhum atendimento solicitado pendente este mês.")
+
         except Exception as e:
             print(f"Erro ao atualizar a cor do botão de solicitados: {e}")
             self.solicitados_btn.setStyleSheet("")
+        # --- FIM DA ALTERAÇÃO ---
+
         self.feriados = database.get_feriados_do_mes(year, month)
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
         stats = database.get_estatisticas_mensais(year, month)
@@ -2290,7 +2365,7 @@ class CalendarWindow(QMainWindow):
         self._atualizar_sugestoes()
 
     def abrir_tela_solicitados(self):
-        dialog = DialogoSolicitados(self.usuario_atual, self)
+        dialog = DialogoSolicitados(self.usuario_atual, self.current_date, self)
         dialog.exec_()
         self.populate_calendar()
 

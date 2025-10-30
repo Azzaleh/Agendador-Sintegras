@@ -149,25 +149,24 @@ def iniciar_db():
         if not tabela_existe(cur, 'ENTREGAS'):
             cur.execute("""CREATE TABLE ENTREGAS (ID INTEGER NOT NULL PRIMARY KEY,DATA_VENCIMENTO DATE NOT NULL,HORARIO VARCHAR(10) NOT NULL,STATUS_ID INTEGER,CLIENTE_ID INTEGER NOT NULL,RESPONSAVEL VARCHAR(150),OBSERVACOES BLOB SUB_TYPE TEXT,IS_RETIFICACAO SMALLINT DEFAULT 0,TIPO_ATENDIMENTO VARCHAR(20) DEFAULT 'AGENDADO' NOT NULL,FOREIGN KEY (STATUS_ID) REFERENCES STATUS (ID) ON DELETE SET NULL,FOREIGN KEY (CLIENTE_ID) REFERENCES CLIENTES (ID) ON DELETE CASCADE)""")
             criar_generator_e_trigger(cur, 'ENTREGAS')
-            
-        # ======================================================================
-        # INÍCIO DA CORREÇÃO - Adicione este bloco
-        # ======================================================================
+
         # --- Verificação para atualizar a tabela ENTREGAS de bancos antigos ---
         if not coluna_existe(cur, 'ENTREGAS', 'TIPO_ATENDIMENTO'):
             print("🔧 Atualizando tabela ENTREGAS: Adicionando coluna TIPO_ATENDIMENTO...")
             cur.execute("ALTER TABLE ENTREGAS ADD TIPO_ATENDIMENTO VARCHAR(20) DEFAULT 'AGENDADO' NOT NULL")
             conn.commit() # Aplica a alteração da estrutura
-        # ======================================================================
-        # FIM DA CORREÇÃO
-        # ======================================================================
 
-        # Tabela LOGS (sem alterações)
+        if not coluna_existe(cur, 'ENTREGAS', 'DATA_CONCLUSAO'):
+            print("🔧 Atualizando tabela ENTREGAS: Adicionando coluna DATA_CONCLUSAO...")
+            cur.execute("ALTER TABLE ENTREGAS ADD DATA_CONCLUSAO TIMESTAMP")
+            conn.commit()
+
+        # Tabela LOGS 
         if not tabela_existe(cur, 'LOGS'):
             cur.execute("CREATE TABLE LOGS (ID INTEGER NOT NULL PRIMARY KEY, DATAHORA TIMESTAMP DEFAULT CURRENT_TIMESTAMP, USUARIO_NOME VARCHAR(50), ACAO VARCHAR(50), DETALHES BLOB SUB_TYPE TEXT)")
             criar_generator_e_trigger(cur, 'LOGS')
 
-        # Tabela FERIADOS (sem alterações)
+        # Tabela FERIADOS 
         if not tabela_existe(cur, 'FERIADOS'):
             print("📅 Criando tabela de Feriados...")
             cur.execute("CREATE TABLE FERIADOS (ID INTEGER NOT NULL PRIMARY KEY, DATA DATE NOT NULL UNIQUE, TIPO VARCHAR(20) NOT NULL)")
@@ -548,16 +547,36 @@ def adicionar_entrega(data, horario, status_id, cliente_id, responsavel, observa
         if conn: conn.close()
 
 def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, observacoes, is_retificacao, usuario_logado, tipo_atendimento):
-    sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=?, TIPO_ATENDIMENTO=? WHERE ID=?"
     conn = None
     try:
         conn = conectar()
         cur = conn.cursor()
+
+        # Descobre o nome do novo status para a lógica de conclusão
+        cur.execute("SELECT NOME FROM STATUS WHERE ID = ?", (status_id,))
+        status_result = cur.fetchone()
+        status_nome = status_result[0].lower() if status_result else ""
+
+        # Verifica se o status é um dos que marcam a tarefa como concluída
+        is_status_concluido = 'feito' in status_nome or 'retificado' in status_nome
+
+        # Monta a query SQL dinamicamente para atualizar a data de conclusão
+        if is_status_concluido:
+            # Se o status for de conclusão, define a data/hora atuais
+            sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=?, TIPO_ATENDIMENTO=?, DATA_CONCLUSAO = CURRENT_TIMESTAMP WHERE ID=?"
+        else:
+            # Se for outro status, limpa a data de conclusão (define como nulo)
+            sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=?, TIPO_ATENDIMENTO=?, DATA_CONCLUSAO = NULL WHERE ID=?"
+
+        # Executa a atualização
         cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, tipo_atendimento, entrega_id))
         conn.commit()
+
+        # Registra o log da operação
         registrar_log(usuario_logado, "ATUALIZAR_AGENDAMENTO", f"Agendamento ID {entrega_id} atualizado.")
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
 
 def deletar_entrega(entrega_id, usuario_logado):
     sql = "DELETE FROM ENTREGAS WHERE ID = ?"
@@ -572,10 +591,10 @@ def deletar_entrega(entrega_id, usuario_logado):
         if conn: conn.close()
 
 def get_entregas_por_dia(data_str):
-
     sql = """
         SELECT
-            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID, e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO,
+            e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID,
+            e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO, e.DATA_CONCLUSAO, -- <--- COLUNA ADICIONADA AQUI
             c.NOME as NOME_CLIENTE, c.CONTATO, c.TIPO_ENVIO, c.NUMERO_COMPUTADORES,
             s.NOME as NOME_STATUS, s.COR_HEX
         FROM ENTREGAS e
@@ -732,6 +751,32 @@ def get_contagem_solicitados_do_mes(ano, mes):
         return cur.fetchone()[0]
     except fdb.Error as e:
         print(f"Erro ao contar atendimentos solicitados: {e}")
+        return 0
+    finally:
+        if conn: conn.close()
+
+def get_contagem_solicitados_pendentes_do_mes(ano, mes):
+    """
+    Busca a CONTAGEM de atendimentos 'SOLICITADO' que estão com o status 'Pendente'.
+    """
+    sql = """
+        SELECT COUNT(e.ID)
+        FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        WHERE EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ?
+        AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+        AND e.TIPO_ATENDIMENTO = 'SOLICITADO'
+        AND UPPER(s.NOME) = 'PENDENTE'
+    """
+    conn = None
+    try:
+        conn = conectar()
+        cur = conn.cursor()
+        cur.execute(sql, (ano, mes))
+        # cur.fetchone()[0] pega o primeiro (e único) resultado da contagem.
+        return cur.fetchone()[0]
+    except fdb.Error as e:
+        print(f"Erro ao contar atendimentos solicitados pendentes: {e}")
         return 0
     finally:
         if conn: conn.close()
