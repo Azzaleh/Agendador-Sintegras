@@ -552,13 +552,36 @@ def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, o
         conn = conectar()
         cur = conn.cursor()
 
-        # Descobre o nome do novo status para a lógica de conclusão
+        # --- INÍCIO DA MUDANÇA ---
+        
+        # 1. Buscar o status ANTIGO antes de atualizar
+        cur.execute("""
+            SELECT s.NOME 
+            FROM ENTREGAS e
+            LEFT JOIN STATUS s ON e.STATUS_ID = s.ID
+            WHERE e.ID = ?
+        """, (entrega_id,))
+        
+        old_status_result = cur.fetchone()
+        old_status_nome = old_status_result[0].lower() if old_status_result else ""
+        
         cur.execute("SELECT NOME FROM STATUS WHERE ID = ?", (status_id,))
-        status_result = cur.fetchone()
-        status_nome = status_result[0].lower() if status_result else ""
+        new_status_result = cur.fetchone()
+        new_status_nome = new_status_result[0].lower() if new_status_result else ""
 
-        # Verifica se o status é um dos que marcam a tarefa como concluída
-        is_status_concluido = 'feito' in status_nome or 'retificado' in status_nome
+
+        responsavel_final = responsavel 
+        
+        if old_status_nome == 'pendente' and new_status_nome != 'pendente':
+            
+            if responsavel != usuario_logado:
+        
+                if f" \ {usuario_logado}" not in responsavel:
+                    responsavel_final = f"{responsavel} \ {usuario_logado}"
+
+        
+        # Verifica se o NOVO status é um dos que marcam a tarefa como concluída
+        is_status_concluido = 'feito' in new_status_nome or 'retificado' in new_status_nome
 
         # Monta a query SQL dinamicamente para atualizar a data de conclusão
         if is_status_concluido:
@@ -568,8 +591,8 @@ def atualizar_entrega(entrega_id, horario, status_id, cliente_id, responsavel, o
             # Se for outro status, limpa a data de conclusão (define como nulo)
             sql = "UPDATE ENTREGAS SET HORARIO=?, STATUS_ID=?, CLIENTE_ID=?, RESPONSAVEL=?, OBSERVACOES=?, IS_RETIFICACAO=?, TIPO_ATENDIMENTO=?, DATA_CONCLUSAO = NULL WHERE ID=?"
 
-        # Executa a atualização
-        cur.execute(sql, (horario, status_id, cliente_id, responsavel, observacoes, 1 if is_retificacao else 0, tipo_atendimento, entrega_id))
+        # Executa a atualização (usando responsavel_final)
+        cur.execute(sql, (horario, status_id, cliente_id, responsavel_final, observacoes, 1 if is_retificacao else 0, tipo_atendimento, entrega_id))
         conn.commit()
 
         # Registra o log da operação
@@ -621,8 +644,9 @@ def get_solicitados_do_mes(ano, mes):
         SELECT
             e.ID, e.DATA_VENCIMENTO, e.HORARIO, e.STATUS_ID, e.CLIENTE_ID,
             e.RESPONSAVEL, e.OBSERVACOES, e.IS_RETIFICACAO, e.TIPO_ATENDIMENTO,
-            e.DATA_CONCLUSAO, -- <--- COLUNA ADICIONADA AQUI
+            e.DATA_CONCLUSAO, 
             c.NOME as NOME_CLIENTE,
+            c.TIPO_ENVIO,
             s.NOME as NOME_STATUS, s.COR_HEX
         FROM ENTREGAS e
         JOIN CLIENTES c ON e.CLIENTE_ID = c.ID

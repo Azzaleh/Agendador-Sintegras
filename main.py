@@ -26,12 +26,44 @@ class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setToolTip("Clique com o botão direito para copiar as sugestões.")
+        # --- NOVAS PROPRIEDADES ---
+        # Vamos guardar os dados completos aqui, sem afetar o visual
+        self.data_sugerida = None
+        self.todos_horarios_sugeridos = []
 
     def contextMenuEvent(self, event):
-        full_text = self.text()
-        cleaned_text = full_text.replace('<br>', '\n').replace('<b>', '').replace('</b>', '')
+        # --- INÍCIO DA LÓGICA ATUALIZADA ---
+        
+        # 1. Verifica se os dados completos (data e horários) foram carregados
+        if self.data_sugerida and self.todos_horarios_sugeridos:
+            
+            # 2. Monta o cabeçalho (Amanhã ou Data)
+            hoje = QDate.currentDate()
+            texto_dia = ""
+            if self.data_sugerida == hoje.addDays(1):
+                texto_dia = "Amanhã"
+            else:
+                # Se não for amanhã (pode ser hoje ou depois), usa a data completa
+                texto_dia = self.data_sugerida.toString("dd/MM/yyyy")
+            
+            titulo = f"Horários disponíveis para {texto_dia}:"
+            
+            # --- MUDANÇA ESTÁ AQUI ---
+            # 3. Monta a lista COMPLETA de horários (agora horizontal)
+            horarios_str = ", ".join(self.todos_horarios_sugeridos) # <-- MUDADO DE "\n" PARA ", "
+            
+            # 4. Texto final para a área de transferência
+            texto_final = f"{titulo}\n{horarios_str}"
+            # --- FIM DA MUDANÇA ---
+
+        # 5. Fallback: se os dados não foram carregados, copia o texto visual
+        else:
+            full_text = self.text()
+            texto_final = full_text.replace('<br>', '\n').replace('<b>', '').replace('</b>', '')
+        
+        # 6. Copia para o clipboard
         clipboard = QApplication.clipboard()
-        clipboard.setText(cleaned_text)
+        clipboard.setText(texto_final)
         QToolTip.showText(event.globalPos(), "Copiado!", self)
 
 
@@ -939,16 +971,26 @@ class DialogoSolicitados(QDialog):
         self.usuario_logado = usuario_logado
         self.date = date
         self.setWindowTitle(f"Atendimentos Solicitados / Nao Agendados ({self.date.strftime('%m/%Y')})")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1000, 600)
         
         layout = QVBoxLayout(self)
         
         self.tabela = QTableWidget()
-        self.tabela.setColumnCount(6)
-        self.tabela.setHorizontalHeaderLabels(["Data", "Horário", "Cliente", "Status", "Responsável", "Observações"])
+
+        self.tabela.setColumnCount(7)
+        self.tabela.setHorizontalHeaderLabels(["Data", "Horário", "Cliente", "Tipo Envio", "Status", "Responsável", "Observações"]) # <-- ADICIONADO "Tipo Envio"
+
         self.tabela.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tabela.setSelectionBehavior(QTableWidget.SelectRows)
-        self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        #self.tabela.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.tabela.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # Data
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # Horário
+        header.setSectionResizeMode(2, QHeaderView.Stretch) # Cliente (esticar)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Tipo Envio
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Status
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Responsável
+        header.setSectionResizeMode(6, QHeaderView.Stretch) # Observações (esticar)
         self.tabela.setSortingEnabled(True)
         layout.addWidget(self.tabela)
         
@@ -967,14 +1009,13 @@ class DialogoSolicitados(QDialog):
         del_btn.clicked.connect(self.excluir_solicitado)
         self.tabela.cellDoubleClicked.connect(self.editar_solicitado)
         
-        # --- INÍCIO DA ALTERAÇÃO (Funcionalidade de Copiar) ---
+
         self.tabela.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabela.customContextMenuRequested.connect(self.mostrar_menu_contexto)
-        # --- FIM DA ALTERAÇÃO ---
+
         
         self.carregar_dados()
 
-    # --- INÍCIO DA ALTERAÇÃO (Nova Função) ---
     def mostrar_menu_contexto(self, position):
         index = self.tabela.indexAt(position)
         if not index.isValid():
@@ -1021,23 +1062,41 @@ class DialogoSolicitados(QDialog):
     def carregar_dados(self):
         solicitados = database.get_solicitados_do_mes(self.date.year, self.date.month)
         
+        hoje = datetime.now().date() 
+        cor_destaque_hoje = QColor("#CFFFCF") 
         self.tabela.setRowCount(len(solicitados))
         for i, item in enumerate(solicitados):
-            data_obj = item['DATA_VENCIMENTO']
+
+            data_obj = item['DATA_VENCIMENTO'] 
             item_data = QTableWidgetItem(data_obj.strftime('%d/%m/%Y'))
             item_data.setData(Qt.UserRole, item)
             
-            self.tabela.setItem(i, 0, item_data)
-            self.tabela.setItem(i, 1, QTableWidgetItem(item['HORARIO']))
-            self.tabela.setItem(i, 2, QTableWidgetItem(item['NOME_CLIENTE']))
-            
+            item_horario = QTableWidgetItem(item['HORARIO'])
+            item_cliente = QTableWidgetItem(item['NOME_CLIENTE'])
+            item_tipo_envio = QTableWidgetItem(item.get('TIPO_ENVIO', 'N/A'))
             item_status = QTableWidgetItem(item.get('NOME_STATUS', 'N/A'))
+            item_responsavel = QTableWidgetItem(item.get('RESPONSAVEL', ''))
+            item_observacoes = QTableWidgetItem(item.get('OBSERVACOES', ''))
+
+            itens_da_linha = [
+                item_data, item_horario, item_cliente, item_tipo_envio, 
+                item_status, item_responsavel, item_observacoes
+            ]
+
+            if data_obj == hoje:
+                for item_celula in itens_da_linha:
+                    item_celula.setBackground(cor_destaque_hoje)
+
             if item.get('COR_HEX'):
                 item_status.setBackground(QColor(item['COR_HEX']))
-            self.tabela.setItem(i, 3, item_status)
             
-            self.tabela.setItem(i, 4, QTableWidgetItem(item.get('RESPONSAVEL', '')))
-            self.tabela.setItem(i, 5, QTableWidgetItem(item.get('OBSERVACOES', '')))
+            self.tabela.setItem(i, 0, item_data)
+            self.tabela.setItem(i, 1, item_horario)
+            self.tabela.setItem(i, 2, item_cliente)
+            self.tabela.setItem(i, 3, item_tipo_envio)
+            self.tabela.setItem(i, 4, item_status) 
+            self.tabela.setItem(i, 5, item_responsavel) 
+            self.tabela.setItem(i, 6, item_observacoes)
 
     def adicionar_solicitado(self):
         dialog = EntregaDialog(self.usuario_logado, QDate.currentDate(), parent=self)
@@ -2318,26 +2377,47 @@ class CalendarWindow(QMainWindow):
     
     def _atualizar_sugestoes(self):
         data_busca = QDate.currentDate()
+        
+        # Limpa os dados antigos antes de começar
+        self.sugestoes_label.data_sugerida = None
+        self.sugestoes_label.todos_horarios_sugeridos = []
+
         for _ in range(30):
-            dia_da_semana = data_busca.dayOfWeek()
-            tipo_feriado = self.feriados.get(data_busca)
-            if dia_da_semana in [6, 7] or tipo_feriado == "nacional":
+            # O 'database.is_dia_invalido' já checa Fim de Semana E Feriado Nacional
+            if database.is_dia_invalido(data_busca):
                 data_busca = data_busca.addDays(1)
                 continue
+                
             todos_horarios = self.gerar_horarios_dinamicos(data_busca)
             agendamentos_dia = database.get_entregas_por_dia(data_busca.toString("yyyy-MM-dd"))
             horarios_ocupados = set(agendamentos_dia.keys())
+            
+            # Esta é a lista COMPLETA de horários livres
             horarios_livres = [h for h in todos_horarios if h not in horarios_ocupados]
+            
             if horarios_livres:
+                # --- INÍCIO DA MUDANÇA ---
+                # 1. Armazena os dados completos na label para a função de cópia
+                self.sugestoes_label.data_sugerida = data_busca
+                self.sugestoes_label.todos_horarios_sugeridos = horarios_livres
+                # --- FIM DA MUDANÇA ---
+
+                # 2. Monta o texto VISUAL (que continua mostrando só os 5 primeiros)
                 hoje = QDate.currentDate()
                 if data_busca == hoje: texto_dia = "Hoje"
                 elif data_busca == hoje.addDays(1): texto_dia = "Amanhã"
                 else: texto_dia = data_busca.toString("dd/MM")
+                
                 sugestoes_str = ", ".join(horarios_livres[:5])
                 if len(horarios_livres) > 5: sugestoes_str += "..."
+                
                 self.sugestoes_label.setText(f"<b>{texto_dia}:</b><br>{sugestoes_str}")
-                return
+                return # Encontrou, pode parar
+            
+            # Se não há horários livres, passa para o próximo dia
             data_busca = data_busca.addDays(1)
+
+        # Se saiu do loop (30 dias) e não achou nada
         self.sugestoes_label.setText("Nenhum horário livre<br>encontrado.")
 
     def populate_calendar(self):
