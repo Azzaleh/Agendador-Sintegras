@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "1.9"
+VERSAO_ATUAL = "2.0"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -526,8 +526,21 @@ class DialogoClientesPendentes(QDialog):
             
             # --- Lógica de população atualizada ---
             for cliente_data in sorted(lista_clientes_data, key=lambda x: x['nome']):
-                item = QListWidgetItem(cliente_data['nome'])
-                item.setData(Qt.UserRole, cliente_data['id']) # Armazena o ID
+                
+                está_inativo = cliente_data.get('inativo', 0) == 1
+                
+                if está_inativo:
+                    nome_exibicao = f"{cliente_data['nome']} (Desativado Manualmente)"
+                else:
+                    nome_exibicao = cliente_data['nome']
+                    
+                item = QListWidgetItem(nome_exibicao)
+                item.setData(Qt.UserRole, cliente_data['id'])
+            
+                if está_inativo:
+                    item.setForeground(QColor("#B22222")) # Vermelho escuro
+                    item.setToolTip("Este cliente está inativo no cadastro geral.")
+                    
                 self.lista_widget.addItem(item)
             
             layout.addWidget(self.lista_widget)
@@ -763,41 +776,58 @@ class DialogoClientesInativos(QDialog):
         layout.addWidget(fechar_btn, alignment=Qt.AlignRight)
 
     def popular_tabela(self, lista_clientes):
-        hoje = datetime.now()
-        clientes_inativos = []
+        # Usamos .date() para comparar apenas dia/mês/ano, ignorando horas
+        hoje = datetime.now().date()
+        clientes_filtrados = []
 
-        # Filtra a lista para incluir apenas clientes inativos há 3 meses ou mais
         for cliente in lista_clientes:
             ultimo_agendamento = cliente.get('ULTIMO_AGENDAMENTO')
-            status = ""
-            meses_inativo = 999 # Um número alto para quem nunca agendou
-
-            if ultimo_agendamento is None:
-                status = "Nunca agendou"
-            else:
-                # Converte a data do banco para objeto datetime
-                data_ultimo = datetime.strptime(str(ultimo_agendamento), '%Y-%m-%d')
-                diferenca = hoje - data_ultimo
-                meses_inativo = diferenca.days // 30
-                
-                if meses_inativo == 0:
-                    status = f"Agendou há {diferenca.days} dias"
-                elif meses_inativo == 1:
-                    status = "Agendou há 1 mês"
-                else:
-                    status = f"Não agenda há {meses_inativo} meses"
+            inativo_manual = cliente.get('INATIVO', 0)
+            inativo_auto = cliente.get('INATIVO_AUTO', 0)
             
-            # Adiciona à lista apenas se for inativo há 3 meses ou mais (ou nunca agendou)
-            if meses_inativo >= 3:
-                cliente['status_formatado'] = status
-                clientes_inativos.append(cliente)
+            status = ""
+            e_inativo = False
 
-        self.tabela_inativos.setRowCount(len(clientes_inativos))
-        for i, cliente in enumerate(clientes_inativos):
-            self.tabela_inativos.setItem(i, 0, QTableWidgetItem(cliente['NOME']))
-            self.tabela_inativos.setItem(i, 1, QTableWidgetItem(cliente.get('CONTATO', '')))
+            # 1. Verifica Flags do Banco (Prioridade Máxima)
+            if inativo_manual == 1 or inativo_manual == "1":
+                status = "Desativado manualmente"
+                e_inativo = True
+            elif inativo_auto == 1 or inativo_auto == "1":
+                status = "Inativo (Sistema: +3 meses)"
+                e_inativo = True
+            
+            # 2. Se não houver flags, fazemos o cálculo manual preventivo
+            if not e_inativo:
+                if ultimo_agendamento is None:
+                    status = "Nunca realizou agendamentos"
+                    e_inativo = True
+                else:
+                    # Converter string do banco para objeto date de forma segura
+                    try:
+                        if isinstance(ultimo_agendamento, str):
+                            data_ultimo = datetime.strptime(ultimo_agendamento, '%Y-%m-%d').date()
+                        else:
+                            data_ultimo = ultimo_agendamento # Já é date/datetime
+                        
+                        diferenca_dias = (hoje - data_ultimo).days
+                        
+                        if diferenca_dias >= 90:
+                            status = f"Sem agendar há {diferenca_dias // 30} meses"
+                            e_inativo = True
+                    except Exception as e:
+                        print(f"Erro ao converter data do cliente {cliente.get('NOME')}: {e}")
+
+            # 3. Adiciona à lista se algum critério de inatividade for atendido
+            if e_inativo:
+                clientes_filtrados.append(cliente | {"status_formatado": status})
+
+        # Preencher a tabela na interface
+        self.tabela_inativos.setRowCount(len(clientes_filtrados))
+        for i, cliente in enumerate(clientes_filtrados):
+            self.tabela_inativos.setItem(i, 0, QTableWidgetItem(str(cliente.get('NOME', ''))))
+            self.tabela_inativos.setItem(i, 1, QTableWidgetItem(str(cliente.get('CONTATO', ''))))
             self.tabela_inativos.setItem(i, 2, QTableWidgetItem(cliente['status_formatado']))
-    
+        
     def filtrar_tabela(self):
         texto_busca = self.busca_edit.text().lower().strip()
         for i in range(self.tabela_inativos.rowCount()):
@@ -968,7 +998,10 @@ class JanelaClientes(QDialog):
         add_btn = QPushButton("Adicionar Novo")
         edit_btn = QPushButton("Editar Selecionado")
         del_btn = QPushButton("Excluir Selecionado")
+        self.inativar_btn = QPushButton("Inativar/Ativar")
+        self.inativar_btn.clicked.connect(self.alternar_inatividade)
         
+        botoes_layout.addWidget(self.inativar_btn)
         botoes_layout.addWidget(import_btn)
         botoes_layout.addWidget(pendentes_btn)
         botoes_layout.addWidget(inativos_btn)
@@ -1002,7 +1035,7 @@ class JanelaClientes(QDialog):
         for cliente in todos_clientes:
             if cliente['ID'] not in ids_clientes_agendados:
                 # Agora passamos o ID e o NOME
-                clientes_pendentes_data.append({'id': cliente['ID'], 'nome': cliente['NOME']}) # <-- Mudança aqui
+                clientes_pendentes_data.append({'id': cliente['ID'], 'nome': cliente['NOME'] , 'inativo': cliente.get('INATIVO', 0)}) # <-- Mudança aqui
         
         # Passamos o self.usuario_logado e self.main_window
         dialog = DialogoClientesPendentes(
@@ -1014,18 +1047,38 @@ class JanelaClientes(QDialog):
             parent=self
         )
         dialog.exec_()
-
+    
     def verificar_inativos(self):
-        # Chama a nova função do banco de dados
-        lista_completa_clientes = database.get_status_de_atividade_clientes()
+        # 1. Força o banco de dados a calcular quem está inativo agora
+        database.atualizar_clientes_inativos_auto(self.usuario_logado['USERNAME'])
+        
+        # 2. RECARREGA a tabela da interface para aplicar as cores novas
+        self.carregar_clientes() 
 
-        if not lista_completa_clientes:
-            QMessageBox.information(self, "Aviso", "Nenhum cliente encontrado no sistema.")
+        # 3. Abre o diálogo de relatório (opcional, já que agora a lista principal pintará de vermelho)
+        lista_completa_clientes = database.listar_clientes()
+        if lista_completa_clientes:
+            dialog = DialogoClientesInativos(lista_completa_clientes, self)
+            dialog.exec_()
+
+    def alternar_inatividade(self):
+        itens = self.tabela_clientes.selectedItems()
+        if not itens:
             return
-            
-        # Cria e exibe o diálogo com a lista de clientes
-        dialog = DialogoClientesInativos(lista_completa_clientes, self)
-        dialog.exec_()
+        
+        linha = itens[0].row()
+        cliente_data = self.tabela_clientes.item(linha, 0).data(Qt.UserRole)
+        # Verifica o estado atual (se for None ou 0, vira Inativo)
+        estado_atual = bool(cliente_data.get('INATIVO', 0))
+        novo_estado = not estado_atual
+        
+        texto = "ativar" if estado_atual else "inativar"
+        reply = QMessageBox.question(self, "Confirmar", f"Deseja {texto} o cliente {cliente_data['NOME']}?", 
+                                    QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            database.alternar_inatividade_cliente(cliente_data['ID'], novo_estado, self.usuario_logado['USERNAME'])
+            self.carregar_clientes()
 
     def filtrar_tabela(self):
         texto_busca = self.busca_edit.text().lower().strip()
@@ -1098,14 +1151,46 @@ class JanelaClientes(QDialog):
             QMessageBox.critical(self, "Erro de Importação", f"Ocorreu um erro ao ler o arquivo:\n{e}")
     def carregar_clientes(self):
         self.tabela_clientes.setRowCount(0)
-        for cliente in database.listar_clientes():
+        cor_fundo_inativo = QColor("#f8d7da") 
+        cor_texto_inativo = QColor("#721c24") 
+
+        lista_clientes = database.listar_clientes()
+
+        for cliente in lista_clientes:
             row = self.tabela_clientes.rowCount()
             self.tabela_clientes.insertRow(row)
-            self.tabela_clientes.setItem(row, 0, QTableWidgetItem(cliente['NOME']))
-            self.tabela_clientes.setItem(row, 1, QTableWidgetItem(cliente['TIPO_ENVIO']))
-            self.tabela_clientes.setItem(row, 2, QTableWidgetItem(cliente['CONTATO']))
-            self.tabela_clientes.setItem(row, 3, QTableWidgetItem(str(cliente.get('NIVEL', ''))))
-            self.tabela_clientes.item(row, 0).setData(Qt.UserRole, dict(cliente))
+            
+            # --- LÓGICA ULTRA RESTRITA ---
+            # Pegamos os valores e garantimos que são tratados como 0 se forem None
+            val_manual = cliente.get('INATIVO')
+            val_auto = cliente.get('INATIVO_AUTO')
+
+            # SÓ fica inativo se for EXATAMENTE o número 1 ou a string '1'
+            manual = 1 if (val_manual == 1 or val_manual == "1") else 0
+            auto = 1 if (val_auto == 1 or val_auto == "1") else 0
+            
+            esta_inativo = (manual == 1 or auto == 1)
+            # -----------------------------
+
+            item_nome = QTableWidgetItem(str(cliente.get('NOME', '')))
+            item_envio = QTableWidgetItem(str(cliente.get('TIPO_ENVIO', '')))
+            item_contato = QTableWidgetItem(str(cliente.get('CONTATO', '')))
+            item_nivel = QTableWidgetItem(str(cliente.get('NIVEL', '')))
+            
+            if esta_inativo:
+                for item in [item_nome, item_envio, item_contato, item_nivel]:
+                    item.setBackground(cor_fundo_inativo)
+                    item.setForeground(cor_texto_inativo)
+                    msg = "Manual" if manual == 1 else "Automático"
+                    item.setToolTip(f"Inativo: {msg}")
+
+            self.tabela_clientes.setItem(row, 0, item_nome)
+            self.tabela_clientes.setItem(row, 1, item_envio)
+            self.tabela_clientes.setItem(row, 2, item_contato)
+            self.tabela_clientes.setItem(row, 3, item_nivel)
+            
+            self.tabela_clientes.item(row, 0).setData(Qt.UserRole, cliente)
+            
         self.filtrar_tabela()
 
     def adicionar_cliente(self):
@@ -1488,15 +1573,18 @@ class EntregaDialog(QDialog):
         self.setWindowTitle("Agendar Novo Sintegra" if not entrega_data else "Editar Agendamento")
         layout = QFormLayout(self)
 
+        # Configuração do Combo de Clientes
         self.cliente_combo = QComboBox()
         self.cliente_combo.setEditable(True)
         self.cliente_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.cliente_combo.completer().setCompletionMode(QCompleter.PopupCompletion)
+        if self.cliente_combo.completer():
+            self.cliente_combo.completer().setCompletionMode(QCompleter.PopupCompletion)
 
         self.status_combo = QComboBox()
         self.responsavel_edit = QLineEdit()
-        self.responsavel_edit.setReadOnly(True) # Tarefa 1 da sua lista (bloquear campo)
+        self.responsavel_edit.setReadOnly(True) 
         self.observacoes_edit = QTextEdit()
+        self.observacoes_edit.setFixedHeight(80)
         
         self.retificacao_check = QCheckBox("É Retificação?")
         
@@ -1504,28 +1592,32 @@ class EntregaDialog(QDialog):
         self.rascunho_edit.setReadOnly(True)
         self.rascunho_edit.setPlaceholderText("Selecione um cliente...")
 
-        # --- INÍCIO DA ALTERAÇÃO ---
+        # Layout de botões de utilidade
         botoes_copia_layout = QHBoxLayout()
         copiar_email_btn = QPushButton("Copiar Email/Local")
         copiar_rascunho_btn = QPushButton("Copiar Rascunho")
         botoes_copia_layout.addWidget(copiar_email_btn)
         botoes_copia_layout.addWidget(copiar_rascunho_btn)
-        # --- FIM DA ALTERAÇÃO ---
 
         self.salvar_btn = QPushButton("Salvar")
         self.cancelar_btn = QPushButton("Cancelar")
 
+        # Define o responsável padrão
         self.responsavel_edit.setText(self.usuario_logado['USERNAME'])
+        
+        # Preenche os combos (Clientes Ativos e Status)
         self.carregar_combos()
 
+        # Adiciona os campos ao formulário
         layout.addRow("Cliente:", self.cliente_combo)
         layout.addRow("Status:", self.status_combo)
         layout.addRow("Responsável:", self.responsavel_edit)
         layout.addRow("", self.retificacao_check)
         layout.addRow("Rascunho:", self.rascunho_edit)
-        layout.addRow("Ações:", botoes_copia_layout) # Adiciona a linha de botões
+        layout.addRow("Ações:", botoes_copia_layout)
         layout.addRow("Observações:", self.observacoes_edit)
 
+        # Se for edição, preenche com os dados existentes
         if entrega_data:
             index_cliente = self.cliente_combo.findData(entrega_data['CLIENTE_ID'])
             if index_cliente > -1: self.cliente_combo.setCurrentIndex(index_cliente)
@@ -1546,33 +1638,43 @@ class EntregaDialog(QDialog):
         botoes_layout.addWidget(self.cancelar_btn)
         layout.addRow(botoes_layout)
         
+        # Conexões de Sinais
         self.salvar_btn.clicked.connect(self.accept)
         self.cancelar_btn.clicked.connect(self.reject)
         copiar_rascunho_btn.clicked.connect(self.copiar_rascunho)
-        copiar_email_btn.clicked.connect(self.copiar_contato_cliente) # Conecta novo botão
+        copiar_email_btn.clicked.connect(self.copiar_contato_cliente)
         self.cliente_combo.currentIndexChanged.connect(self.atualizar_dados_cliente)
         self.status_combo.currentIndexChanged.connect(self.atualizar_rascunho)
-        self.atualizar_dados_cliente() # Chamada inicial
+        
+        # Atualização inicial baseada no cliente selecionado
+        self.atualizar_dados_cliente()
 
     def carregar_combos(self):
-        #... (sem alterações nesta função)
+        """Popula os combos usando apenas clientes ativos."""
         self.cliente_combo.clear()
         self.status_combo.clear()
-        clientes = database.listar_clientes()
+        
+        clientes = database.listar_clientes_ativos() 
         status_list = database.listar_status()
+
         if not clientes:
-            self.cliente_combo.addItem("Nenhum cliente cadastrado")
+            self.cliente_combo.addItem("Nenhum cliente ativo encontrado")
             self.cliente_combo.setEnabled(False)
             self.salvar_btn.setEnabled(False)
             self.rascunho_edit.setEnabled(False)
-            self.observacoes_edit.setPlaceholderText("É necessário cadastrar um cliente antes de criar um agendamento.")
         else:
+            self.cliente_combo.setEnabled(True)
+            self.salvar_btn.setEnabled(True)
+            self.rascunho_edit.setEnabled(True)
             for cliente in clientes:
                 self.cliente_combo.addItem(cliente['NOME'], cliente['ID'])
-        completer = QCompleter([self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())], self)
+
+        lista_nomes = [self.cliente_combo.itemText(i) for i in range(self.cliente_combo.count())]
+        completer = QCompleter(lista_nomes, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         self.cliente_combo.setCompleter(completer)
+
         for status in status_list:
             self.status_combo.addItem(status['NOME'], status['ID'])
 
@@ -1580,52 +1682,56 @@ class EntregaDialog(QDialog):
         cliente_id = self.cliente_combo.currentData()
         if cliente_id:
             self.cliente_selecionado_data = database.get_cliente_por_id(cliente_id)
+            
+            # Feedback visual para Inativo Automático
+            if self.cliente_selecionado_data and self.cliente_selecionado_data.get('INATIVO_AUTO') == 1:
+                self.rascunho_edit.setPlaceholderText("AVISO: Cliente reativado agora.")
+                self.rascunho_edit.setStyleSheet("border: 2px solid #ffc107; background-color: #fff3cd;")
+            else:
+                self.rascunho_edit.setPlaceholderText("")
+                self.rascunho_edit.setStyleSheet("")
+                
+            self.atualizar_rascunho()
         else:
             self.cliente_selecionado_data = None
-        self.atualizar_rascunho()
 
     def atualizar_rascunho(self):
-       
-        if not self.cliente_combo.isEnabled(): return
+        if not self.cliente_combo.isEnabled() or self.cliente_combo.currentIndex() == -1: 
+            return
+            
         nome_cliente = self.cliente_combo.currentText()
         nome_status = self.status_combo.currentText()
         data_referente = self.date.addMonths(-1)
         data_str = data_referente.toString("MM/yyyy")
+        
         if nome_status and nome_status.lower() == 'retificado':
-            texto_rascunho = f"Sintegra Retificado-{data_str}-{nome_cliente}"
+            texto_rascunho = f"Sintegra Retificado - {data_str} - {nome_cliente}"
         else:
-            texto_rascunho = f"Sintegra -{data_str}-{nome_cliente}"
+            texto_rascunho = f"Sintegra - {data_str} - {nome_cliente}"
         self.rascunho_edit.setText(texto_rascunho)
     
     def copiar_contato_cliente(self):
         if self.cliente_selecionado_data and self.cliente_selecionado_data.get('CONTATO'):
             texto_para_copiar = self.cliente_selecionado_data['CONTATO']
-            clipboard = QApplication.clipboard()
-            clipboard.setText(texto_para_copiar)
+            QApplication.clipboard().setText(texto_para_copiar)
+            
             botao = self.sender()
             botao.setEnabled(False) 
             botao.setText("Copiado!")
             QTimer.singleShot(1500, lambda: (botao.setText("Copiar Email/Local"), botao.setEnabled(True)))
         else:
-            QMessageBox.information(self, "Aviso", "Nenhum contato encontrado para este cliente.")
+            QMessageBox.information(self, "Aviso", "Nenhum contato encontrado.")
 
     def copiar_rascunho(self):
         texto_para_copiar = self.rascunho_edit.text()
         if texto_para_copiar:
-            clipboard = QApplication.clipboard()
-            clipboard.setText(texto_para_copiar)
+            QApplication.clipboard().setText(texto_para_copiar)
             botao = self.sender()
             botao.setEnabled(False) 
             botao.setText("Copiado!")
-            def restaurar_botao():
-                try:
-                    botao.setText("Copiar Rascunho")
-                    botao.setEnabled(True)
-                except RuntimeError: pass
-            QTimer.singleShot(1500, restaurar_botao)
+            QTimer.singleShot(1500, lambda: (botao.setText("Copiar Rascunho"), botao.setEnabled(True)))
 
     def get_data(self):
-        
         return {
             "cliente_id": self.cliente_combo.currentData(),
             "status_id": self.status_combo.currentData(),
@@ -2221,7 +2327,7 @@ class DialogoSobre(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sobre o Agendador de Sintegras")
-        self.setMinimumSize(800, 650)
+        self.setMinimumSize(850, 700)
 
         layout = QVBoxLayout(self)
 
@@ -2229,121 +2335,55 @@ class DialogoSobre(QDialog):
         self.browser.setOpenExternalLinks(True)
         layout.addWidget(self.browser)
 
-        # --- CONTEÚDO DA DOCUMENTAÇÃO ATUALIZADO ---
-        documentacao_html = fdocumentacao_html = f"""
-            <h1>Agendador de Sintegras - Versão {VERSAO_ATUAL}</h1>
-            <p>Este é um guia funcional sobre como utilizar todas as ferramentas do sistema.</p>
+        # --- CONTEÚDO DA DOCUMENTAÇÃO COM DESTAQUE PARA NOVIDADES ---
+        documentacao_html = f"""
+            <h1 style='color: #2c3e50;'>Agendador de Sintegras - Versão {VERSAO_ATUAL}</h1>
+            <p>Guia completo de funcionalidades para otimização do fluxo de trabalho.</p>
             <hr>
 
-            <h2>Tela Principal (Calendário)</h2>
-            <p>A tela principal é o seu centro de comando. Cada dia no calendário mostra a contagem de agendamentos e uma cor de status baseada nas prioridades do dia.</p>
+            <h2 style='color: #e67e22;'>⭐ NOVIDADES DESTA VERSÃO</h2>
             <ul>
-                <li><b>Para ver a agenda de um dia:</b> Dê um <b>clique duplo</b> em um dia para abrir a "Agenda do Dia" detalhada.</li>
-                <li><b>Para agendar um novo horário:</b> Na "Agenda do Dia", dê um <b>clique duplo</b> em uma linha de horário vaga.</li>
-                <li><b>Para editar um agendamento:</b> Dê um <b>clique duplo</b> em um horário já preenchido.</li>
-                <li><b>Para marcar um Feriado:</b> Dê um <b>clique direito</b> em um dia no calendário para marcá-lo como Feriado Nacional (que bloqueia agendamentos) ou Municipal (que apenas sinaliza).</li>
-            </ul>
-            <hr>
-            
-            <h2>Painel Superior (Dashboard & Sugestões)</h2>
-            <ul>
-                <li><b>Dashboard (Centro):</b> Mostra as estatísticas do mês atual, incluindo quantos clientes foram Concluídos, a porcentagem de atendimento e quantos ainda estão Pendentes.</li>
-                <li><b>Sugestões de Agendamento (Esquerda):</b> Mostra os próximos 5 horários livres, começando de hoje.
-                    <ul>
-                        <li><b>Ação Secreta:</b> <b>Clique com o botão direito</b> neste texto para copiar a lista completa de horários disponíveis (ex: para enviar rapidamente a um cliente).</li>
-                    </ul>
-                </li>
+                <li><b>Análise de Performance (Atalho F3):</b> Agora disponível na tela de Clientes, permite visualizar rankings de produtividade, retificações e erros.</li>
+                <li><b>Inatividade Automática:</b> O sistema agora detecta e sinaliza em vermelho clientes que não agendam há mais de 3 meses.</li>
+                <li><b>Dashboard Inteligente:</b> O cálculo de pendências e porcentagem no topo da tela agora ignora automaticamente clientes inativados manualmente.</li>
+                <li><b>Cópia Rápida de Sugestões:</b> Clique com o botão direito nas sugestões de horários para copiar a lista formatada para o cliente.</li>
             </ul>
             <hr>
 
-            <h2>Barra de Ferramentas (Inferior)</h2>
-            <p>Esta barra contém todas as ações de gerenciamento do sistema.</p>
-
-            <h3>Botão: Configurações</h3>
+            <h2>📅 Tela Principal (Calendário)</h2>
+            <p>O centro de comando visual do sistema.</p>
             <ul>
-                <li><b>O que faz:</b> Abre a tela de configurações do sistema (requer senha de admin).</li>
-                <li><b>O que você pode mudar:</b>
-                    <ul>
-                        <li><b>Conexão do Banco de Dados:</b> Alternar entre "Local" (um arquivo .FDB no seu PC) ou "Remoto" (acessar um servidor na rede).</li>
-                        <li><b>Definição de Horários:</b> Mudar de "Automático" (ex: 8:30 às 17:30, de 30 em 30 min) para "Manual" (você digita a lista de horários ex: 09:00, 10:00, 14:00).</li>
-                        <li><b>Configurações Gerais:</b> Alterar o tempo de antecedência dos lembretes de agendamento e o intervalo de atualização automática da tela.</li>
-                    </ul>
-                </li>
-            </ul>
-
-            <h3>Botão: Sobre</h3>
-            <ul>
-                <li><b>O que faz:</b> Abre esta janela de ajuda que você está lendo agora.</li>
-            </ul>
-
-            <h3>Botão: Solicitados / Não Agendados</h3>
-            <ul>
-                <li><b>O que faz:</b> Abre uma tela <b>independente</b> para registrar atendimentos que não se encaixam no calendário (ex: chamados de última hora, encaixes, pedidos avulsos).</li>
-                <li><b>Alerta Amarelo:</b> Se este botão ficar <b>amarelo</b>, é um sinal de que existem atendimentos "Solicitados" que ainda estão com o status "Pendente" e precisam de atenção.</li>
-            </ul>
-
-            <h3>Botão: Gerenciar Clientes</h3>
-            <ul>
-                <li><b>O que faz:</b> Abre a lista de todos os seus clientes para adicionar, editar ou excluir.</li>
-                <li><b>Agendamento Recorrente:</b> Ao adicionar ou editar um cliente, você pode marcar a caixa "Agendamento Recorrente" para criar agendamentos automáticos (ex: "todo dia 10"). O sistema é inteligente:
-                    <ul>
-                        <li>Se o dia 10 cair em um Sábado, Domingo ou Feriado Nacional, ele busca o próximo dia útil.</li>
-                        <li>Se o horário preferido (ex: 09:00) estiver ocupado, ele busca o próximo horário livre no mesmo dia.</li>
-                        <li>Se o dia 10 estiver lotado, ele pula para o próximo dia útil com vagas.</li>
-                    </ul>
-                </li>
-                <li><b>Limpar Agendamentos Futuros:</b> Dentro da tela de "Editar Cliente", este botão vermelho apaga <b>todos</b> os agendamentos futuros (de hoje em diante) para esse cliente. Útil se o cliente mudou de status e você quer refazer a recorrência.</li>
-                
-                <li><b>Botão "Verificar Pendentes":</b> Mostra uma lista de clientes que <b>ainda não</b> tiveram nenhum agendamento no mês atual.
-                    <ul>
-                        <li style="color:blue;"><b>Ação Rápida:</b> Clique com o <b>botão direito</b> em um cliente nessa lista para "Agendar no próximo horário livre" ou "Adicionar aos 'Solicitados'".</li>
-                    </ul>
-                </li>
-                <li><b>Botão "Verificar Inativos":</b> Mostra uma lista de clientes que não agendam há 3 meses ou mais.</li>
-                <li><b>Botão "Importar de XLSX":</b> Permite carregar centenas de clientes de uma vez a partir de uma planilha Excel.</li>
-            </ul>
-
-            <h3>Botão: Gerenciar Status</h3>
-            <ul>
-                <li><b>O que faz:</b> Permite criar, editar ou excluir os status dos agendamentos (ex: "Pendente", "Feito", "Houve Algum Erro").</li>
-                <li><b>Importante:</b> A cor que você define aqui é a cor que aparece na "Agenda do Dia" e influencia a cor do calendário na tela principal.</li>
-            </ul>
-            
-            <h3>Botão: Gerenciar Usuários</h3>
-            <ul>
-                <li><b>O que faz:</b> Abre a tela de gerenciamento de usuários (requer senha de admin).</li>
-                <li><b>O que você pode fazer:</b> Criar novos usuários, mudar senhas e definir quem é ou não um "Administrador". Administradores têm acesso às Configurações e ao Gerenciamento de Usuários.</li>
-            </ul>
-
-            <h3>Botão: Gerar Relatório</h3>
-            <ul>
-                <li><b>O que faz:</b> Abre a ferramenta de exportação de dados para PDF ou CSV (Excel).</li>
-                <li><b>O que você pode exportar:</b>
-                    <ul>
-                        <li><b>Relatório de Agendamentos:</b> Uma lista detalhada de todos os agendamentos em um período, podendo filtrar por status (ex: "só o que deu erro").</li>
-                        <li><b>Relatório de Logs de Atividade:</b> Um relatório de auditoria que mostra quem fez o quê no sistema (quem criou, quem deletou, quem atualizou e quando).</li>
-                    </ul>
-                </li>
-            </ul>
-            <hr>
-            
-            <h2>Busca Rápida (Rodapé)</h2>
-            <p>A barra na parte inferior da tela principal permite encontrar agendamentos em todo o sistema.</p>
-            <ul>
-                <li><b>Como usar:</b> Digite o nome de um cliente, um responsável (usuário) ou uma palavra-chave da observação (ex: "erro nota") e clique em "Buscar".</li>
-                <li><b>Resultado:</b> Uma nova janela mostrará todos os agendamentos (passados e futuros) que correspondem à sua busca. Dê <b>clique duplo</b> em um resultado para abrir a agenda daquele dia.</li>
+                <li><b>Agenda do Dia:</b> Clique duplo em qualquer dia para abrir os detalhes.</li>
+                <li><b>Status Coloridos:</b> A cor de cada dia reflete o status do agendamento prioritário definido por você.</li>
+                <li><b>Feriados:</b> Clique com o botão direito para bloquear datas (Feriado Nacional) ou apenas sinalizar (Municipal).</li>
             </ul>
             <hr>
 
-            <h2>Atalhos de Teclado</h2>
+            <h2>👥 Gerenciamento de Clientes</h2>
             <ul>
-                <li><b>F3 (na janela de Clientes):</b> Abre a tela de "Análise de Performance de Clientes", que compara quem dá mais/menos retificações, erros, etc, no período.</li>
+                <li><b>Agendamento Recorrente:</b> Cria agendamentos automáticos para os próximos meses, respeitando fins de semana, feriados e horários já ocupados.</li>
+                <li><b>Limpeza de Futuro:</b> Botão vermelho dentro da edição do cliente que remove agendamentos futuros sem afetar o histórico passado.</li>
+                <li><b>Filtro de Pendentes:</b> Botão "Verificar Pendentes" mostra quem ainda não foi agendado no mês atual, com opção de agendamento rápido via botão direito.</li>
+            </ul>
+            <hr>
+
+            <h2>🛠️ Ferramentas Administrativas</h2>
+            <ul>
+                <li><b>Configurações (Admin):</b> Permite alternar entre Banco Local ou Remoto e definir horários de expediente.</li>
+                <li><b>Gerenciar Usuários:</b> Controle de quem pode acessar o sistema e quem possui permissões de Administrador.</li>
+                <li><b>Relatórios Avançados:</b> Exportação de agendamentos e logs de atividade em PDF ou CSV (Excel).</li>
+            </ul>
+
+            <h2 style='color: #2980b9;'>⌨️ Atalhos Úteis</h2>
+            <ul>
+                <li><b>F3 (Janela de Clientes):</b> Abre a análise de performance e rankings.</li>
+                <li><b>ENTER (Busca Rápida):</b> Executa a busca global por clientes ou observações.</li>
             </ul>
         """
         self.browser.setHtml(documentacao_html)
 
         botoes_layout = QHBoxLayout()
-        fechar_btn = QPushButton("Fechar")
+        fechar_btn = QPushButton("Entendi")
         fechar_btn.clicked.connect(self.accept)
         botoes_layout.addStretch()
         botoes_layout.addWidget(fechar_btn)
@@ -2708,7 +2748,8 @@ class CalendarWindow(QMainWindow):
         self.feriados = database.get_feriados_do_mes(year, month)
         self.month_label.setText(f"<b>{self.current_date.strftime('%B de %Y')}</b>")
         stats = database.get_estatisticas_mensais(year, month)
-        total_clientes = database.get_total_clientes()
+        #total_clientes = database.get_total_clientes()
+        total_clientes = database.get_total_clientes_ativos()
         ids_clientes_atendidos = database.get_clientes_com_agendamento_concluido_no_mes(year, month)
         concluidos_mes = stats.get('CONCLUIDOS', 0)
         retificados_mes = stats.get('RETIFICADOS', 0)
