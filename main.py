@@ -506,7 +506,10 @@ class DialogoClientesPendentes(QDialog):
         titulo_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(titulo_label)
 
-        total_pendentes = len(lista_clientes_data)
+
+        clientes_ativos = [c for c in lista_clientes_data if c.get('inativo', 0) == 0]
+        total_pendentes = len(clientes_ativos)
+        #total_pendentes = len(lista_clientes_data)
         total_label = QLabel(f"<b>Total de clientes pendentes: {total_pendentes}</b>")
         total_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(total_label)
@@ -1754,7 +1757,6 @@ class DayViewDialog(QDialog):
         self.tabela_agenda.setHorizontalHeaderLabels(["Horário", "Cliente", "Contato", "Tipo Envio", "Status"])
         self.tabela_agenda.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tabela_agenda.setSelectionBehavior(QTableWidget.SelectRows)
-        #self.tabela_agenda.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) deixa as coluna estaticas e mais alinhadas, desconente e apague as linhas 1459 a 1462
 
         self.tabela_agenda.setColumnWidth(0, 80)
         self.tabela_agenda.setColumnWidth(1, 250) 
@@ -1773,14 +1775,11 @@ class DayViewDialog(QDialog):
         del_btn.clicked.connect(self.excluir_agendamento)
         self.tabela_agenda.cellDoubleClicked.connect(self.gerenciar_agendamento_duplo_clique)
         
-        # --- INÍCIO DA ALTERAÇÃO ---
-        # Habilita o menu de contexto personalizado e conecta a uma função
+        # Habilita o menu de contexto personalizado
         self.tabela_agenda.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tabela_agenda.customContextMenuRequested.connect(self.mostrar_menu_contexto)
-        # --- FIM DA ALTERAÇÃO ---
         
         self.carregar_agenda_dia()
-
 
     # FUNÇÃO PARA GERIR O MENU DO BOTÃO DIREITO
     def mostrar_menu_contexto(self, position):
@@ -1804,7 +1803,6 @@ class DayViewDialog(QDialog):
             horario_agendamento = agendamento.get('HORARIO', 'N/A')
             status = agendamento.get('NOME_STATUS', 'N/A')
 
-            # --- ALTERAÇÃO: A linha "Responsável" foi removida daqui ---
             texto_final = (f"Empresa: {nome_empresa}\n"
                            f"Data: {data_agendamento}\n"
                            f"Horário: {horario_agendamento}\n"
@@ -1824,7 +1822,6 @@ class DayViewDialog(QDialog):
             clipboard = QApplication.clipboard()
             clipboard.setText(texto_final)
             QToolTip.showText(self.tabela_agenda.viewport().mapToGlobal(position), "Copiado!", self)
-    # --- FIM DA ALTERAÇÃO ---
 
     def carregar_agenda_dia(self):
         self.tabela_agenda.setRowCount(0)
@@ -1840,7 +1837,16 @@ class DayViewDialog(QDialog):
                 agendamento = agendamentos_dia[horario]
                 
                 is_retificacao = agendamento.get('IS_RETIFICACAO', 0)
-                cor_fundo_linha = QColor("#cdc3f7") if is_retificacao else None
+                observacao = agendamento.get('OBSERVACOES', '')
+                tem_observacao = bool(observacao and str(observacao).strip())
+                
+                # Prioridade: Cor alaranjada se tiver observação, lilás se for retificação
+                if tem_observacao:
+                    cor_fundo_linha = QColor("#FF6A3D")  # Tom alaranjado suave
+                elif is_retificacao:
+                    cor_fundo_linha = QColor("#cdc3f7")  # Tom lilás
+                else:
+                    cor_fundo_linha = None
 
                 def create_item_with_bg(text, background_color):
                     item = QTableWidgetItem(str(text))
@@ -1854,21 +1860,20 @@ class DayViewDialog(QDialog):
                 
                 item_status = QTableWidgetItem(str(agendamento['NOME_STATUS']))
                 
-                # 2. Aplica a cor específica do STATUS (vinda do DB) INCONDICIONALMENTE
+                # Aplica a cor específica do STATUS (vinda do DB) INCONDICIONALMENTE
                 if agendamento.get('COR_HEX'):
                     item_status.setBackground(QColor(agendamento['COR_HEX']))
                 
-                # 3. Adiciona o item de status à tabela
                 self.tabela_agenda.setItem(i, 4, item_status)
                 
                 if cor_fundo_linha:
                     item_horario.setBackground(cor_fundo_linha)
 
                 item_horario.setData(Qt.UserRole, agendamento)
-                observacoes = agendamento.get('OBSERVACOES', 'Nenhuma observação.')
+                observacoes_texto = observacao if tem_observacao else 'Nenhuma observação.'
                 num_computadores = agendamento.get('NUMERO_COMPUTADORES', 0)
                 
-                texto_tooltip = (f"<b>Nº de Computadores:</b> {num_computadores}<br><hr><b>Observações:</b><br>{observacoes}")
+                texto_tooltip = (f"<b>Nº de Computadores:</b> {num_computadores}<br><hr><b>Observações:</b><br>{observacoes_texto}")
                 for col in range(self.tabela_agenda.columnCount()):
                     item = self.tabela_agenda.item(i, col)
                     if item: 
@@ -1885,13 +1890,30 @@ class DayViewDialog(QDialog):
             self.editar_agendamento()
         else:
             horario = item_horario.text()
+            data_str = self.date.toString("yyyy-MM-dd")
+
+            # 1. Verificação prévia no banco antes de abrir o formulário
+            if database.horario_ocupado(data_str, horario):
+                QMessageBox.warning(self, "Horário Ocupado", "Outro usuário acabou de agendar este horário!")
+                self.carregar_agenda_dia()
+                return
+
             dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
             
             if dialog.exec_() == QDialog.Accepted:
+                # 2. Validação final ao clicar em Salvar (garante que ninguém pegou o horário enquanto o formulário estava aberto)
+                if database.horario_ocupado(data_str, horario):
+                    QMessageBox.critical(
+                        self, 
+                        "Conflito de Agendamento", 
+                        "Atenção: Este horário foi preenchido por outro usuário,atualize a tela."
+                    )
+                    self.carregar_agenda_dia()
+                    return
+
                 data = dialog.get_data()
                 cliente_id_selecionado = data['cliente_id']
 
-                
                 pendente_existente = database.verificar_agendamento_pendente_existente(cliente_id_selecionado)
 
                 if pendente_existente:
@@ -1899,20 +1921,22 @@ class DayViewDialog(QDialog):
                     data_pendente = data_obj.strftime('%d/%m/%Y')
                     hora_pendente = pendente_existente['HORARIO']
                     
-                    reply = QMessageBox.question(self, "Cliente já possui agendamento pendente",
-                                               f"Este cliente já tem um agendamento pendente para {data_pendente} às {hora_pendente}.\n\n"
-                                               "Deseja desmarcar o agendamento antigo e criar este novo?",
-                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    reply = QMessageBox.question(
+                        self, 
+                        "Cliente já possui agendamento pendente",
+                        f"Este cliente já tem um agendamento pendente para {data_pendente} às {hora_pendente}.\n\n"
+                        "Deseja desmarcar o agendamento antigo e criar este novo?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                    )
 
                     if reply == QMessageBox.No:
                         QMessageBox.information(self, "Operação Cancelada", "O novo agendamento não foi criado.")
                         return 
-                    
                     else:
                         database.deletar_entrega(pendente_existente['ID'], self.usuario_logado['USERNAME'])
                 
                 database.adicionar_entrega(
-                    self.date.toString("yyyy-MM-dd"), 
+                    data_str, 
                     horario, 
                     data['status_id'], 
                     data['cliente_id'], 
@@ -1959,7 +1983,6 @@ class DayViewDialog(QDialog):
             database.deletar_entrega(agendamento_existente['ID'], self.usuario_logado['USERNAME'])
             self.carregar_agenda_dia()
             self.parent().populate_calendar()
-
 
 class DialogoResultadosBusca(QDialog):
     def __init__(self, resultados, usuario_logado, parent=None):

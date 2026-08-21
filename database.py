@@ -142,7 +142,7 @@ def iniciar_db():
 
         # Tabela CLIENTES (sem alterações)
         if not tabela_existe(cur, 'CLIENTES'):
-            cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(100) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
+            cur.execute("CREATE TABLE CLIENTES (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(150) NOT NULL, TIPO_ENVIO VARCHAR(100) NOT NULL, CONTATO VARCHAR(300) NOT NULL, GERA_RECIBO SMALLINT DEFAULT 0, CONTA_XMLS SMALLINT DEFAULT 0, NIVEL VARCHAR(20), OUTROS_DETALHES BLOB SUB_TYPE TEXT, NUMERO_COMPUTADORES INTEGER DEFAULT 0)")
             criar_generator_e_trigger(cur, 'CLIENTES')
 
         # Adiciona coluna INATIVO se não existir
@@ -1222,6 +1222,7 @@ def listar_clientes_ativos():
     finally:
         if conn:
             conn.close()
+            
 def atualizar_clientes_inativos_auto(usuario_logado="sistema"):
     conn = None
     try:
@@ -1278,3 +1279,17 @@ def atualizar_clientes_inativos_auto(usuario_logado="sistema"):
     finally:
         if conn:
             conn.close()
+
+def horario_ocupado(data_str, horario):
+    """Retorna True se o horário já estiver agendado no banco."""
+    # Usando DATA_VENCIMENTO em vez de DATA_AGENDAMENTO
+    sql = "SELECT COUNT(*) FROM ENTREGAS WHERE DATA_VENCIMENTO = ? AND HORARIO = ?"
+    
+    con = conectar()  # Ajuste para a sua função de conexão (ex: conectar() ou get_connection())
+    try:
+        cur = con.cursor()
+        cur.execute(sql, (data_str, horario))
+        res = cur.fetchone()
+        return res[0] > 0 if res else False
+    finally:
+        con.close()  
