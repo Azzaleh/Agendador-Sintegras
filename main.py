@@ -20,7 +20,7 @@ import database
 import export
 #from theme_manager import ThemeManager, load_stylesheet
 
-VERSAO_ATUAL = "2.0"
+VERSAO_ATUAL = "2.2"
 
 class SuggestionLabel(QLabel):
     def __init__(self, *args, **kwargs):
@@ -1387,9 +1387,50 @@ class DialogoSolicitados(QDialog):
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             horario = QTime.currentTime().toString("HH:mm")
-            
+            data_str = QDate.currentDate().toString("yyyy-MM-dd")
+            cliente_id_selecionado = data['cliente_id']
+
+            # --- VERIFICAÇÃO: STATUS 'FEITO' / 'FEITO E ENVIADO' NO MÊS ---
+            # Ocorre apenas se a opção 'is_retificacao' NÃO estiver marcada
+            if not data['is_retificacao']:
+                agendamento_concluido = database.buscar_agendamento_concluido_no_mes(cliente_id_selecionado, data_str)
+
+                if agendamento_concluido:
+                    dt_conclusao = agendamento_concluido['data_conclusao']
+                    cliente_nome = agendamento_concluido['cliente_nome']
+                    
+                    if dt_conclusao:
+                        dia_envio = dt_conclusao.strftime('%d/%m/%Y')
+                        hora_envio = dt_conclusao.strftime('%H:%M')
+                    else:
+                        dia_envio = "Data N/A"
+                        hora_envio = "Hora N/A"
+
+                    # Alerta pop-up
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("Aviso de Agendamento Concluído")
+                    msg_box.setIcon(QMessageBox.Question)
+                    msg_box.setTextFormat(Qt.RichText)
+                    
+                    texto_aviso = (
+                        f"O cliente <b>{cliente_nome}</b> já possui um agendamento concluído neste mês!<br><br>"
+                        f"<b>Enviado em:</b> {dia_envio} às {hora_envio}<br>"
+                        f"<b>Status:</b> {agendamento_concluido['status_nome']}<br><br>"
+                        f"Deseja realmente adicionar aos solicitados?"
+                    )
+                    
+                    msg_box.setText(texto_aviso)
+                    msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                    msg_box.setDefaultButton(QMessageBox.No)
+                    
+                    resposta = msg_box.exec_()
+                    
+                    if resposta == QMessageBox.No:
+                        return # Cancela a inclusão nos solicitados
+
+            # Se passar na checagem (ou se for retificação), insere no banco
             database.adicionar_entrega(
-                QDate.currentDate().toString("yyyy-MM-dd"),
+                data_str,
                 horario,
                 data['status_id'],
                 data['cliente_id'],
@@ -1842,7 +1883,7 @@ class DayViewDialog(QDialog):
                 
                 # Prioridade: Cor alaranjada se tiver observação, lilás se for retificação
                 if tem_observacao:
-                    cor_fundo_linha = QColor("#FF6A3D")  # Tom alaranjado suave
+                    cor_fundo_linha = QColor("#FD8B68")  # Tom alaranjado suave
                 elif is_retificacao:
                     cor_fundo_linha = QColor("#cdc3f7")  # Tom lilás
                 else:
@@ -1901,12 +1942,12 @@ class DayViewDialog(QDialog):
             dialog = EntregaDialog(self.usuario_logado, self.date, parent=self)
             
             if dialog.exec_() == QDialog.Accepted:
-                # 2. Validação final ao clicar em Salvar (garante que ninguém pegou o horário enquanto o formulário estava aberto)
+                # 2. Validação final de horário ocupado
                 if database.horario_ocupado(data_str, horario):
                     QMessageBox.critical(
                         self, 
                         "Conflito de Agendamento", 
-                        "Atenção: Este horário foi preenchido por outro usuário,atualize a tela."
+                        "Atenção: Este horário foi preenchido por outro usuário, atualize a tela."
                     )
                     self.carregar_agenda_dia()
                     return
@@ -1914,6 +1955,43 @@ class DayViewDialog(QDialog):
                 data = dialog.get_data()
                 cliente_id_selecionado = data['cliente_id']
 
+                # --- 1° AJUSTE: CHECAGEM SÓ OCORRE SE NÃO FOR RETIFICAÇÃO ---
+                if not data['is_retificacao']:
+                    agendamento_concluido = database.buscar_agendamento_concluido_no_mes(cliente_id_selecionado, data_str)
+
+                    if agendamento_concluido:
+                        dt_conclusao = agendamento_concluido['data_conclusao']
+                        cliente_nome = agendamento_concluido['cliente_nome']
+                        
+                        if dt_conclusao:
+                            dia_envio = dt_conclusao.strftime('%d/%m/%Y')
+                            hora_envio = dt_conclusao.strftime('%H:%M')
+                        else:
+                            dia_envio = "Data N/A"
+                            hora_envio = "Hora N/A"
+
+                        msg_box = QMessageBox(self)
+                        msg_box.setWindowTitle("Aviso de Agendamento Concluído")
+                        msg_box.setIcon(QMessageBox.Question)
+                        msg_box.setTextFormat(Qt.RichText)
+                        
+                        texto_aviso = (
+                            f"O cliente <b>{cliente_nome}</b> já possui um agendamento concluído neste mês!<br><br>"
+                            f"<b>Enviado em:</b> {dia_envio} às {hora_envio}<br>"
+                            f"<b>Status:</b> {agendamento_concluido['status_nome']}<br><br>"
+                            f"Deseja realmente agendar novamente?"
+                        )
+                        
+                        msg_box.setText(texto_aviso)
+                        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                        msg_box.setDefaultButton(QMessageBox.No)
+                        
+                        resposta = msg_box.exec_()
+                        
+                        if resposta == QMessageBox.No:
+                            return # Cancela o agendamento
+
+                # --- LÓGICA EXISTENTE PARA AGENDAMENTO PENDENTE ---
                 pendente_existente = database.verificar_agendamento_pendente_existente(cliente_id_selecionado)
 
                 if pendente_existente:
@@ -1935,6 +2013,7 @@ class DayViewDialog(QDialog):
                     else:
                         database.deletar_entrega(pendente_existente['ID'], self.usuario_logado['USERNAME'])
                 
+                # Cria a entrega se passou por todas as checagens
                 database.adicionar_entrega(
                     data_str, 
                     horario, 
@@ -2366,41 +2445,69 @@ class DialogoSobre(QDialog):
 
             <h2 style='color: #e67e22;'>⭐ NOVIDADES DESTA VERSÃO</h2>
             <ul>
-                <li><b>Análise de Performance (Atalho F3):</b> Agora disponível na tela de Clientes, permite visualizar rankings de produtividade, retificações e erros.</li>
-                <li><b>Inatividade Automática:</b> O sistema agora detecta e sinaliza em vermelho clientes que não agendam há mais de 3 meses.</li>
-                <li><b>Dashboard Inteligente:</b> O cálculo de pendências e porcentagem no topo da tela agora ignora automaticamente clientes inativados manualmente.</li>
-                <li><b>Cópia Rápida de Sugestões:</b> Clique com o botão direito nas sugestões de horários para copiar a lista formatada para o cliente.</li>
+                <li><b>Verificação de Sintegra Concluído (Feito / Feito e enviado):</b> 
+                    Ao tentar agendar ou adicionar aos 'Solicitados' um cliente que já possui status "Feito" ou "Feito e enviado" no mesmo mês, o sistema exibe uma mensagem de confirmação informando a <b>data, hora do envio e nome do cliente</b> antes de concluir.
+                </li>
+                <li><b>Exceção para Retificação (É Retificação?):</b> 
+                    Se a opção "É Retificação?" estiver marcada no formulário, a mensagem de aviso de agendamento concluído não é exibida, permitindo o novo agendamento diretamente.
+                </li>
+            </ul>
+            <hr>
+
+            <h2 style='color: #16a085;'>💡 DESTAQUES E RECURSOS INTELIGENTES</h2>
+            <ul>
+                <li><b>Análise de Performance (Atalho F3):</b> 
+                    Disponível na tela de Clientes, permite visualizar rankings de produtividade, retificações e erros.
+                </li>
+                <li><b>Inatividade Automática:</b> 
+                    O sistema detecta e sinaliza em vermelho clientes que não agendam há mais de 3 meses.
+                </li>
+                <li><b>Dashboard Inteligente:</b> 
+                    O cálculo de pendências e porcentagem no topo da tela ignora automaticamente clientes inativados manualmente.
+                </li>
+                <li><b>Cópia Rápida de Sugestões:</b> 
+                    Clique com o botão direito nas sugestões de horários para copiar a lista formatada para o cliente.
+                </li>
             </ul>
             <hr>
 
             <h2>📅 Tela Principal (Calendário)</h2>
             <p>O centro de comando visual do sistema.</p>
             <ul>
-                <li><b>Agenda do Dia:</b> Clique duplo em qualquer dia para abrir os detalhes.</li>
-                <li><b>Status Coloridos:</b> A cor de cada dia reflete o status do agendamento prioritário definido por você.</li>
-                <li><b>Feriados:</b> Clique com o botão direito para bloquear datas (Feriado Nacional) ou apenas sinalizar (Municipal).</li>
+                <li><b>Agenda do Dia:</b> Clique duplo em qualquer dia para abrir e editar os agendamentos.</li>
+                <li><b>Status Coloridos:</b> A cor de cada dia reflete o status do agendamento prioritário.</li>
+                <li><b>Feriados:</b> Clique com o botão direito para bloquear datas (Feriado Nacional) ou sinalizar (Municipal).</li>
+                <li><b>Busca Rápida Global:</b> Pesquise agendamentos por nome do cliente, responsável ou observação.</li>
+            </ul>
+            <hr>
+
+            <h2>📋 Solicitados / Não Agendados</h2>
+            <ul>
+                <li><b>Gerenciamento de Solicitados:</b> Controle de atendimentos pendentes que ainda não possuem horário fixo no calendário.</li>
+                <li><b>Validação de Duplicidade:</b> Checagem automática de envios já realizados no mês ao adicionar um novo solicitado (caso não seja retificação).</li>
             </ul>
             <hr>
 
             <h2>👥 Gerenciamento de Clientes</h2>
             <ul>
-                <li><b>Agendamento Recorrente:</b> Cria agendamentos automáticos para os próximos meses, respeitando fins de semana, feriados e horários já ocupados.</li>
-                <li><b>Limpeza de Futuro:</b> Botão vermelho dentro da edição do cliente que remove agendamentos futuros sem afetar o histórico passado.</li>
-                <li><b>Filtro de Pendentes:</b> Botão "Verificar Pendentes" mostra quem ainda não foi agendado no mês atual, com opção de agendamento rápido via botão direito.</li>
+                <li><b>Agendamento Recorrente:</b> Cria agendamentos automáticos para os próximos meses, respeitando fins de semana, feriados e horários ocupados.</li>
+                <li><b>Limpeza de Futuro:</b> Botão dentro da edição do cliente que remove agendamentos futuros sem afetar o histórico passado.</li>
+                <li><b>Verificar Pendentes no Mês:</b> Exibe clientes sem agendamento no mês atual, permitindo agendamento rápido via botão direito.</li>
             </ul>
             <hr>
 
-            <h2>🛠️ Ferramentas Administrativas</h2>
+            <h2>🛠️ Ferramentas Administrativas e Configurações</h2>
             <ul>
-                <li><b>Configurações (Admin):</b> Permite alternar entre Banco Local ou Remoto e definir horários de expediente.</li>
-                <li><b>Gerenciar Usuários:</b> Controle de quem pode acessar o sistema e quem possui permissões de Administrador.</li>
-                <li><b>Relatórios Avançados:</b> Exportação de agendamentos e logs de atividade em PDF ou CSV (Excel).</li>
+                <li><b>Configuração do Banco de Dados:</b> Suporte a Banco Local (.FDB) ou Banco Remoto (Servidor).</li>
+                <li><b>Definição de Horários:</b> Configuração de expediente automático ou lista manual de horários.</li>
+                <li><b>Gerenciamento de Usuários:</b> Controle de acesso, senhas e permissões de Administrador.</li>
+                <li><b>Relatórios:</b> Exportação de agendamentos e logs de atividade em PDF ou CSV (Excel).</li>
             </ul>
 
             <h2 style='color: #2980b9;'>⌨️ Atalhos Úteis</h2>
             <ul>
                 <li><b>F3 (Janela de Clientes):</b> Abre a análise de performance e rankings.</li>
-                <li><b>ENTER (Busca Rápida):</b> Executa a busca global por clientes ou observações.</li>
+                <li><b>ENTER (Busca Rápida):</b> Executa a busca global por agendamentos.</li>
             </ul>
         """
         self.browser.setHtml(documentacao_html)

@@ -1293,3 +1293,43 @@ def horario_ocupado(data_str, horario):
         return res[0] > 0 if res else False
     finally:
         con.close()  
+
+def buscar_agendamento_concluido_no_mes(cliente_id, data_agendamento_str):
+    """
+    Verifica se já existe uma entrega para o cliente no mesmo mês/ano
+    da data_agendamento_str com status contendo 'Feito' ou 'Feito e enviado'.
+    Retorna os dados do agendamento concluído (incluindo a data/hora de conclusão) ou None.
+    """
+    conn = conectar()
+    cur = conn.cursor()
+    
+    # Extrai o ano e o mês da data selecionada (formato esperados YYYY-MM-DD)
+    partes_data = data_agendamento_str.split('-')
+    ano = int(partes_data[0])
+    mes = int(partes_data[1])
+
+    # Query para buscar registros no mesmo mês/ano com status que contenham 'feito'
+    query = """
+        SELECT FIRST 1 
+            e.ID, e.DATA_CONCLUSAO, s.NOME AS STATUS_NOME, c.NOME AS CLIENTE_NOME
+        FROM ENTREGAS e
+        JOIN STATUS s ON e.STATUS_ID = s.ID
+        JOIN CLIENTES c ON e.CLIENTE_ID = c.ID
+        WHERE e.CLIENTE_ID = ?
+          AND EXTRACT(YEAR FROM e.DATA_VENCIMENTO) = ?
+          AND EXTRACT(MONTH FROM e.DATA_VENCIMENTO) = ?
+          AND (LOWER(s.NOME) CONTAINING 'feito')
+        ORDER BY e.DATA_CONCLUSAO DESC, e.ID DESC
+    """
+    cur.execute(query, (cliente_id, ano, mes))
+    row = cur.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "id": row[0],
+            "data_conclusao": row[1], # Objeto datetime ou None
+            "status_nome": row[2],
+            "cliente_nome": row[3]
+        }
+    return None
